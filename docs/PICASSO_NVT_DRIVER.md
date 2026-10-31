@@ -47,3 +47,11 @@ Protocol/init reference:
 `LineageOS/android_kernel_xiaomi_sm7250@8e49d06af7ff5757c03ab181874cf1e90a1e1192`,
 `drivers/input/touchscreen/nt36672c/nt36xxx{,_fw_update}.c` and
 `nt36xxx_mem_map.h`. Board and prior probe evidence: [PICASSO_TOUCH.md](PICASSO_TOUCH.md).
+
+The first active image, local31i, built successfully in userfork CI41177965312
+at efc0d615 and was flashed with readback verification on2026-10-31 at14:57:48.
+Full128MiB boot SHA256:
+`280593774c5dc94d2e6b7c5489eb1b1b5f4f0e9ee9ab6688083e10a3dbb92389`.
+The original Recovery and preceding full boot/ring are preserved. USB
+enumeration is observed; controller CRC/firmware gates, physical input and
+UI response still need on-device verification.
