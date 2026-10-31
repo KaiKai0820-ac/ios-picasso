@@ -120,6 +120,10 @@ while [ $# -gt 0 ]; do
 		osver=(--os_version "$2")
 		shift
 		;;
+	--os-patch-level)
+		osver+=(--os_patch_level "$2")
+		shift
+		;;
 	*)
 		payload="$1"
 		;;

@@ -128,6 +128,13 @@ def parse(buf):
             break
         else:
             raise SystemExit('bad FDT token %d at %#x' % (tok, p - 4))
+    # The first FDT_BEGIN_NODE already describes the real empty-name root.
+    # `root` above is only a parser sentinel. Returning it wrapped the tree in
+    # a second empty node on serialization, hiding qcom IDs from ABL.
+    if root.props or len(root.children) != 1 or root.children[0].name != '':
+        raise ValueError('FDT must have exactly one empty-name root')
+    root = root.children[0]
+    root.parent = None
     return root, dict(magic=magic, totalsize=totalsize, version=version,
                       rsvmap=off_rsvmap, boot_cpuid=boot_cpuid)
 

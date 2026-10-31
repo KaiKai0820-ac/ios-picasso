@@ -36,7 +36,7 @@ def report(root, buf, verbose=False):
     out('  compatible     : %s' % ' '.join(
         x.rstrip(b'\0').decode('utf-8', 'replace')
         for x in (root.get('compatible') or b'').split(b'\0') if x))
-    out('  board-id       : %s' % (root.u32('qcom,board-id') or ['?']))
+    out('  board-id       : %s' % (root.u32('qcom,board-id') or ['?'],))
 
     # --- memory ---------------------------------------------------------
     out()
