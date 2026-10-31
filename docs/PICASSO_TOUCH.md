@@ -254,3 +254,18 @@ shared-cache slide SIGBUS observed on the previous boot is a separate
 unresolved stability issue.
 
 [source]: https://github.com/LineageOS/android_kernel_xiaomi_sm7250/tree/8e49d06af7ff5757c03ab181874cf1e90a1e1192
+
+### local31h chip-select test deployment
+
+The named37130240-byte local31h image SHA256 is
+`9c74dfdb096555f4227823e25769b4a1ef95ba68365e4bc64f6e335fe84aa5d1`;
+its kernel SHA256 is
+`08a2eb43948efc55a88a871c5b7976b21e50a44927bd88df0378c9e52b15b6cb`.
+Both payloads and actual463-byte command validate; independent mkbootimg is
+byte-identical. It retains the UFS staging fix and enables only the identification
+probe (`picassonvtprobe=1`, `sweettouch=0`). It was deployed with full readback
+verification and rebooted at14:20:53. Full128MiB boot SHA256:
+`7b4319b607e822e8b088359fa42ebe78a1284687157f0e6b8a9954e1c5330b2b`.
+Recovery is unchanged. Full preceding boot/ring are in external
+`probe-deploy-20261031-142045`. Await the delayed probe and fresh Recovery log;
+no hardware ID or touch functionality is established yet.
