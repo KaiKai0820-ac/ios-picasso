@@ -115,6 +115,21 @@ jobs:
           cp -R dxb/fakeroot/System/Library/Kernels/. out/ 2>/dev/null || true
           ls -la out
           (cd out && shasum -a 256 kernel.* > SHA256SUMS) || true
+          # Keep a small artifact for device iterations; the complete archive
+          # below also contains link archives and debugging helpers.
+          mkdir -p boot-kernel
+          for file in out/kernel.*; do
+            if [ -f "$file" ]; then cp "$file" boot-kernel/; fi
+          done
+          cp out/SHA256SUMS boot-kernel/ 2>/dev/null || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xnu-boot-kernel
+          path: boot-kernel/
+          if-no-files-found: warn
+          retention-days: 7
 
       - uses: actions/upload-artifact@v4
         if: always()
