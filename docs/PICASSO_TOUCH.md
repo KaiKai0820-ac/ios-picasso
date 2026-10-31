@@ -77,8 +77,41 @@ Binary, source snapshot and comparison manifest remain outside Git in
    existing framebuffer/HID coordinate transform before claiming touch works.
 
 The first acceptance milestone is a matching chip ID in the XNU log; the
-second is actual down/move/up input reaching iOS. No new touch driver or
-touch-enabled image has been built or flashed at this point.
+second is actual down/move/up input reaching iOS.
+
+## Identification probe prepared
+
+`xnu/patches/0210-picasso-novatek-spi-probe.patch` adds an opt-in
+`picassonvtprobe=1` path ahead of the legacy touch driver. It waits 150 seconds
+so the persistent logger (default delay 120 seconds) is running, then checks
+the serial-engine protocol/FIFO state, reads the trim ID and, on a match,
+reads firmware information through the NT36675 memory map. It emits no HID
+events and performs no controller reset or firmware download. It returns
+without touching hardware when the boot argument is absent.
+
+The probe uses Lito-specific values verified from the Linux reference:
+
+| Item | Lito/picasso value |
+| --- | --- |
+| GCC wrapper1 vote register | `0x52008`, bits 18-21 and 23 |
+| SE7 root clock | command `0x18140`, branch `0x1813c` |
+| Wrapper core clock branches | `0x23138`, `0x23140` |
+| Wrapper AHB branches | `0x18004`, `0x18008` |
+| SPI pin register bank | TLMM WEST `0x0f500000` |
+| Reset and IRQ pin register bank | TLMM EAST `0x0f900000` |
+
+FIFO transactions are limited to 32 bytes and bounded by hardware FIFO
+depth. Clock, transfer and abort polls have finite timeouts; a transfer error
+stops the probe. Unsupported protocol, occupied engine, disabled FIFO, or a
+DFS level that is not XO/1 cause the probe to stop before transactions.
+Probe clock is at most 480 kHz. The reset and IRQ GPIOs are not reconfigured.
+
+Both the new source and its legacy-driver entry point compile locally as
+ARM64 Mach-O objects against the headers and compile flags from successful
+CI run `41087536020`. The patch reverse-applies cleanly to the resulting
+source tree. These checks verify compilation and patch placement, **not
+hardware communication**. No probe kernel has been linked or flashed yet;
+the phone continues running the confirmed local31d GUI boot.
 
 ## Separate display and stability work
 

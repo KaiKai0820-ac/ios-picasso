@@ -1,0 +1,409 @@
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -108,6 +108,7 @@
+ bsd/dev/sweet_sample.c			standard
+ bsd/dev/sweet_keys.c			standard
+ bsd/dev/sweet_touch.c			standard
++bsd/dev/picasso_nvt.c			standard
+ bsd/dev/sweet_rpmh.c			standard
+ bsd/dev/sweet_spmi.c			standard
+ bsd/dev/sweet_files.c			standard
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -20,6 +20,7 @@
+ extern kern_return_t thread_terminate(thread_t);
+ extern int sweet_rpmh_vreg_enable(const char *res, unsigned mv);
+ extern void sweet_hid_touch(int finger, int down, int x, int y);
++extern bool picasso_nvt_init(void);
+ void sweet_touch_init(void);
+ 
+ #define TOUCH_SE_PA      0x00a84000u
+@@ -638,6 +639,9 @@
+ void
+ sweet_touch_init(void)
+ {
++	if (picasso_nvt_init()) {
++		return;
++	}
+ 	int enabled = 1;
+ 	thread_t thread;
+ 	if (st.started) {
+--- /dev/null
++++ b/bsd/dev/picasso_nvt.c
+@@ -0,0 +1,376 @@
++/*
++ * Opt-in picasso Novatek SPI identification, not a working touch driver.
++ * Board facts: docs/PICASSO_TOUCH.md; Linux sm7250 at 8e49d06a.
++ * No reset, firmware upload, PMIC access, DMA, or touch events in this stage.
++ */
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++#include <sys/param.h>
++#include <sys/systm.h>
++#include <sys/errno.h>
++#include <kern/clock.h>
++#include <kern/thread.h>
++#include <kern/sched_prim.h>
++#include <machine/machine_routines.h>
++#include <pexpert/pexpert.h>
++
++extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
++extern kern_return_t thread_terminate(thread_t);
++bool picasso_nvt_init(void);
++
++#define NV_SPI_PA        0x00984000u
++#define NV_GCC_PA        0x00100000u
++#define NV_TLMM_WEST     0x0f500000u
++#define NV_GCC_VOTE      0x52008u
++#define NV_RCG           0x18140u
++#define NV_CLOCK_MASK    ((0xfu << 18) | (1u << 23))
++
++#define NV_STATUS       0x040u
++#define NV_MCLK         0x048u
++#define NV_FIFO_OFF      0x064u
++#define NV_FW           0x068u
++#define NV_CLK_SEL      0x07cu
++#define NV_DMA          0x258u
++#define NV_TX_LEN       0x26cu
++#define NV_RX_LEN       0x270u
++#define NV_CMD          0x600u
++#define NV_CTRL         0x604u
++#define NV_IRQ          0x610u
++#define NV_IRQ_EN       0x614u
++#define NV_IRQ_CLR      0x618u
++#define NV_TX           0x700u
++#define NV_RX           0x780u
++#define NV_TX_COUNT     0x800u
++#define NV_RX_COUNT     0x804u
++#define NV_HW_TX        0xe24u
++#define NV_HW_RX        0xe28u
++#define NV_DONE         (1u << 0)
++#define NV_ERRORS       (0x0eu | (3u << 24) | (3u << 28))
++#define NV_FIFO_EVENTS  ((1u << 26) | (1u << 27) | (1u << 30))
++#define NV_PROBE_MAX    32u
++
++static struct {
++	vm_offset_t se, gcc, gpio;
++	uint32_t tx_depth, rx_depth;
++	bool started, dead;
++} nv;
++static int nv_wait_chan;
++
++static uint32_t
++nv_read(vm_offset_t base, uint32_t offset)
++{
++	uint32_t value = *(volatile uint32_t *)(base + offset);
++	__asm__ volatile("dmb oshld" ::: "memory");
++	return value;
++}
++
++static void
++nv_write(vm_offset_t base, uint32_t offset, uint32_t value)
++{
++	__asm__ volatile("dmb oshst" ::: "memory");
++	*(volatile uint32_t *)(base + offset) = value;
++	__asm__ volatile("dsb osh" ::: "memory");
++}
++
++static void
++nv_sleep(unsigned ms)
++{
++	uint64_t deadline;
++	clock_interval_to_deadline(ms, NSEC_PER_MSEC, &deadline);
++	(void)assert_wait_deadline(&nv_wait_chan, THREAD_UNINT, deadline);
++	thread_block(THREAD_CONTINUE_NULL);
++}
++
++static bool
++nv_clear(vm_offset_t base, uint32_t offset, uint32_t mask)
++{
++	for (unsigned i = 0; i < 5000; ++i) {
++		if (!(nv_read(base, offset) & mask)) {
++			return true;
++		}
++		delay(1);
++	}
++	return false;
++}
++
++static bool
++nv_clocks(void)
++{
++	/* Lito offsets differ from sweet. Only wrapper1/global SE7 is voted. */
++	nv_write(nv.gcc, NV_GCC_VOTE, nv_read(nv.gcc, NV_GCC_VOTE) | NV_CLOCK_MASK);
++	uint32_t dfs = nv_read(nv.gcc, NV_RCG + 0x14u);
++	uint32_t cfg = nv_read(nv.gcc, NV_RCG + 4u);
++	printf("PICASSO NVT: clock vote=%#x rcg=%#x cfg=%#x dfs=%#x\n",
++	    nv_read(nv.gcc, NV_GCC_VOTE), nv_read(nv.gcc, NV_RCG), cfg, dfs);
++	if (dfs & 1u) {
++		cfg = nv_read(nv.gcc, NV_RCG + 0x1cu);
++		if ((cfg & 0x371fu) != 1u) {
++			printf("PICASSO NVT: DFS level0=%#x is not XO/1; stopping\n", cfg);
++			return false;
++		}
++	} else {
++		/* XO / 1: no PLL programming or voltage changes. */
++		cfg = (cfg & ~(0x371fu | (1u << 20))) | 1u;
++		nv_write(nv.gcc, NV_RCG + 4u, cfg);
++		nv_write(nv.gcc, NV_RCG, nv_read(nv.gcc, NV_RCG) | 1u);
++		if (!nv_clear(nv.gcc, NV_RCG, 1u)) {
++			printf("PICASSO NVT: clock update timeout\n");
++			return false;
++		}
++	}
++	const uint32_t branches[] = {0x23140, 0x23138, 0x18004, 0x18008, 0x1813c};
++	for (unsigned i = 0; i < sizeof(branches) / sizeof(branches[0]); ++i) {
++		if (!nv_clear(nv.gcc, branches[i], 1u << 31)) {
++			printf("PICASSO NVT: clock branch %#x halted (%#x)\n",
++			    branches[i], nv_read(nv.gcc, branches[i]));
++			return false;
++		}
++	}
++	return true;
++}
++
++static bool
++nv_engine(void)
++{
++	uint32_t fw = nv_read(nv.se, NV_FW);
++	uint32_t status = nv_read(nv.se, NV_STATUS);
++	uint32_t tx = nv_read(nv.se, NV_HW_TX);
++	uint32_t rx = nv_read(nv.se, NV_HW_RX);
++	nv.tx_depth = (tx >> 16) & 0x3fu;
++	nv.rx_depth = (rx >> 16) & 0x3fu;
++	printf("PICASSO NVT: SE=%#x fw=%#x status=%#x tx=%#x rx=%#x fifo-off=%#x\n",
++	    NV_SPI_PA, fw, status, tx, rx, nv_read(nv.se, NV_FIFO_OFF));
++	if (((fw >> 8) & 0xffu) != 1u || (status & 0x1001u) ||
++	    (nv_read(nv.se, NV_FIFO_OFF) & 1u) || nv.tx_depth < 8u ||
++	    nv.rx_depth < 8u || ((tx >> 24) & 0x3fu) != 32u ||
++	    ((rx >> 24) & 0x3fu) != 32u ||
++	    (nv_read(nv.se, NV_TX_COUNT) & 0x0fffffffu) ||
++	    (nv_read(nv.se, NV_RX_COUNT) & 0x01ffffffu)) {
++		printf("PICASSO NVT: unsupported, busy, or nonempty serial engine; stopping\n");
++		return false;
++	}
++	/* GPIO6/7/8 live in WEST on lito, qup11 is mux1, 6mA, no pull.
++	 * Do not touch reset GPIO4, IRQ GPIO5, or the generic GPIO9 CS pin. */
++	for (unsigned pin = 6; pin <= 8; ++pin) {
++		uint32_t offset = pin * 0x1000u;
++		uint32_t cfg = nv_read(nv.gpio, offset);
++		nv_write(nv.gpio, offset, (cfg & ~0x3ffu) | (1u << 2) | (2u << 6));
++	}
++	/* GENI FIFO mode, with interrupts polled rather than routed to a CPU. */
++	nv_write(nv.se, 0xe1cu, 0);
++	nv_write(nv.se, 0xe18u, 0);
++	nv_write(nv.se, 0x028u, nv_read(nv.se, 0x028u) | 0x7fu);
++	nv_write(nv.se, 0xe30u, nv_read(nv.se, 0xe30u) | 0x0fu);
++	nv_write(nv.se, 0x024u, 0x7fu);
++	nv_write(nv.se, 0x020u, 1);
++	nv_write(nv.se, NV_DMA, nv_read(nv.se, NV_DMA) & ~1u);
++	nv_write(nv.se, NV_CLK_SEL, 0);
++	nv_write(nv.se, NV_MCLK, (40u << 4) | 1u); /* <=480kHz, below panel's 5MHz */
++	/* Four 8-bit, MSB-first words per FIFO element (Linux packing vectors). */
++	nv_write(nv.se, 0x260u, 0x0feu | (0x1feu << 10));
++	nv_write(nv.se, 0x264u, 0x2feu | (0x3ffu << 10));
++	nv_write(nv.se, 0x284u, 0x0feu | (0x1feu << 10));
++	nv_write(nv.se, 0x288u, 0x2feu | (0x3ffu << 10));
++	nv_write(nv.se, 0x254u, 0);
++	nv_write(nv.se, 0x268u, (nv_read(nv.se, 0x268u) & ~0x3ffu) | 4u);
++	nv_write(nv.se, 0x224u, nv_read(nv.se, 0x224u) & ~1u); /* CPHA0 */
++	nv_write(nv.se, 0x230u, nv_read(nv.se, 0x230u) & ~4u); /* CPOL0 */
++	nv_write(nv.se, 0x22cu, nv_read(nv.se, 0x22cu) & ~3u);
++	nv_write(nv.se, 0x250u, 0); /* chip select0 */
++	nv_write(nv.se, 0x24cu, 0); /* active low */
++	nv_write(nv.se, 0x25cu, nv_read(nv.se, 0x25cu) & ~1u);
++	nv_write(nv.se, 0x278u, 0);
++	nv_write(nv.se, 0x80cu, 1);
++	nv_write(nv.se, 0x810u, 0);
++	nv_write(nv.se, 0x814u, nv.rx_depth - 2u);
++	nv_write(nv.se, NV_IRQ_CLR, 0xffffffffu);
++	nv_write(nv.se, NV_IRQ_EN, NV_DONE | NV_ERRORS | NV_FIFO_EVENTS | (3u << 4));
++	return true;
++}
++
++static void
++nv_abort(void)
++{
++	/* Only called for a command issued here; never abort somebody else's work. */
++	nv_write(nv.se, NV_CTRL, 2u);
++	bool done = false;
++	for (unsigned i = 0; i < 5000; ++i) {
++		if (nv_read(nv.se, NV_IRQ) & (1u << 5)) {
++			done = true;
++			break;
++		}
++		delay(1);
++	}
++	nv.dead = true; /* A single error ends this probe, even if abort succeeds. */
++	printf("PICASSO NVT: transfer stopped abort=%d status=%#x irq=%#x\n",
++	    done, nv_read(nv.se, NV_STATUS), nv_read(nv.se, NV_IRQ));
++	nv_write(nv.se, NV_IRQ_CLR, 0xffffffffu);
++}
++
++static int
++nv_transfer(const uint8_t *tx, uint8_t *rx, unsigned length)
++{
++	if (nv.dead || !tx || !length || length > NV_PROBE_MAX ||
++	    length > nv.tx_depth * 4u || length > nv.rx_depth * 4u) {
++		return EINVAL;
++	}
++	if (nv_read(nv.se, NV_STATUS) & 0x1001u) {
++		nv.dead = true;
++		return EBUSY;
++	}
++	nv_write(nv.se, NV_IRQ_CLR, 0xffffffffu);
++	nv_write(nv.se, NV_TX_LEN, length);
++	if (rx) {
++		nv_write(nv.se, NV_RX_LEN, length);
++	}
++	nv_write(nv.se, NV_CMD, (rx ? 3u : 1u) << 27);
++	unsigned sent = 0, got = 0;
++	for (unsigned tick = 0; tick < 20000; ++tick) {
++		uint32_t irq = nv_read(nv.se, NV_IRQ);
++		if (irq & (NV_ERRORS | (3u << 4))) {
++			nv_abort();
++			return EIO;
++		}
++		uint32_t tx_count = nv_read(nv.se, NV_TX_COUNT) & 0x0fffffffu;
++		if (tx_count > nv.tx_depth) {
++			nv_abort();
++			return EIO;
++		}
++		unsigned room = nv.tx_depth - tx_count;
++		while (room-- && sent < length) {
++			uint32_t word = 0;
++			for (unsigned byte = 0; byte < 4u && sent < length; ++byte) {
++				word |= (uint32_t)tx[sent++] << (byte * 8u);
++			}
++			nv_write(nv.se, NV_TX, word);
++		}
++		uint32_t rx_status = nv_read(nv.se, NV_RX_COUNT);
++		uint32_t count = rx_status & 0x01ffffffu;
++		if (count > nv.rx_depth || (!rx && count)) {
++			nv_abort();
++			return EIO;
++		}
++		for (unsigned i = 0; i < count; ++i) {
++			unsigned valid = 4u;
++			if (i + 1u == count && (rx_status & (1u << 31))) {
++				unsigned last = (rx_status >> 28) & 7u;
++				if (last > 4u) {
++					nv_abort();
++					return EIO;
++				}
++				if (last) {
++					valid = last;
++				}
++			}
++			uint32_t word = nv_read(nv.se, NV_RX);
++			if (got + valid > length) {
++				nv_abort();
++				return EIO;
++			}
++			for (unsigned byte = 0; byte < valid; ++byte) {
++				rx[got++] = (uint8_t)(word >> (byte * 8u));
++			}
++		}
++		if (irq & NV_DONE) {
++			nv_write(nv.se, NV_IRQ_CLR, irq);
++			if (sent == length && (!rx || got == length) &&
++			    nv_clear(nv.se, NV_STATUS, 1u)) {
++				return 0;
++			}
++			nv.dead = true;
++			return EIO;
++		}
++		nv_write(nv.se, NV_IRQ_CLR, irq & NV_FIFO_EVENTS);
++		delay(1);
++	}
++	nv_abort();
++	return ETIMEDOUT;
++}
++
++static int
++nv_page(uint32_t address)
++{
++	const uint8_t page[] = {0xff, (uint8_t)(address >> 15), (uint8_t)(address >> 7)};
++	return nv_transfer(page, NULL, sizeof(page));
++}
++
++static int
++nv_register(uint32_t address, uint8_t *data, unsigned length)
++{
++	uint8_t tx[NV_PROBE_MAX] = {0}, rx[NV_PROBE_MAX] = {0};
++	if (!data || !length || length > NV_PROBE_MAX - 2u ||
++	    (address & 0x7fu) + length > 128u) {
++		return EINVAL;
++	}
++	int err = nv_page(address);
++	if (err) {
++		return err;
++	}
++	tx[0] = (uint8_t)(address & 0x7fu); /* read: bit7 clear; one dummy byte */
++	err = nv_transfer(tx, rx, length + 2u);
++	if (!err) {
++		memcpy(data, rx + 2, length);
++	}
++	return err;
++}
++
++static void
++nv_probe_once(void)
++{
++	/* The persistent log flusher defaults to 120s. Probe once after it starts. */
++	printf("PICASSO NVT: identification probe starts in 150s\n");
++	nv_sleep(150000);
++	printf("PICASSO NVT: identification-only probe, no reset or firmware upload\n");
++	nv.gcc = ml_io_map(NV_GCC_PA, 0x60000);
++	nv.se = ml_io_map(NV_SPI_PA, 0x4000);
++	nv.gpio = ml_io_map(NV_TLMM_WEST, 0x9000);
++	if (!nv.gcc || !nv.se || !nv.gpio || !nv_clocks() || !nv_engine()) {
++		printf("PICASSO NVT: initialization stopped; GUI input is unchanged\n");
++		return;
++	}
++	uint8_t id[6] = {0}, info[4] = {0};
++	int err = nv_register(0x1f64eu, id, sizeof(id));
++	printf("PICASSO NVT: trim err=%d id=%02x %02x %02x %02x %02x %02x\n",
++	    err, id[0], id[1], id[2], id[3], id[4], id[5]);
++	bool match = !err && id[0] == 0x0c && id[3] == 0x72 && id[4] == 0x66 && id[5] == 3;
++	if (match) {
++		err = nv_register(0x22d78u, info, sizeof(info));
++		printf("PICASSO NVT: matched NT36675 map; fw err=%d version=%u inverse=%u matrix=%ux%u\n",
++		    err, info[0], info[1], info[2], info[3]);
++		if (!nv.dead) {
++			int restore = nv_page(0x22d00u);
++			printf("PICASSO NVT: event page restore=%d\n", restore);
++		}
++	}
++	printf("PICASSO NVT: probe complete match=%d; no touch events enabled\n", match);
++}
++
++static void
++nv_probe(void *arg __unused, wait_result_t result __unused)
++{
++	nv_probe_once();
++	(void)thread_terminate(current_thread());
++	thread_block(THREAD_CONTINUE_NULL);
++}
++
++bool
++picasso_nvt_init(void)
++{
++	int enabled = 0;
++	(void)PE_parse_boot_argn("picassonvtprobe", &enabled, sizeof(enabled));
++	if (enabled != 1) {
++		return false;
++	}
++	if (nv.started) {
++		return true;
++	}
++	nv.started = true;
++	thread_t thread;
++	kern_return_t kr = kernel_thread_start(nv_probe, NULL, &thread);
++	if (kr == KERN_SUCCESS) {
++		thread_deallocate(thread);
++	} else {
++		printf("PICASSO NVT: kernel_thread_start failed %d\n", kr);
++	}
++	return true;
++}
++#endif
