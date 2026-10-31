@@ -41,7 +41,7 @@ local until the lock is reacquired. Writes retain their existing path.
   patch0211, including unlocked recursive I/O.
 - Multi-chunk unaligned reads, partial writes and early-error allocation cleanup
   pass for both versions. This models software interleavings, not UFS hardware.
-- Device stability validation is pending. The stability boot disables the Novatek
+- The captured local31g stability run is recorded below. This boot disables the Novatek
   probe (`picassonvtprobe=0`, `sweettouch=0`) to isolate this change. Touch input
   remains unimplemented; a successful SPI transfer with an all-FF ID is not chip
   identification.
@@ -65,6 +65,18 @@ log area. Full128MiB boot SHA256:
 `db222c198146ca3d1f78e9dd772d6a7d862d866bb2450dd9eca329fc5225c730`.
 Recovery remains byte-identical. Full previous boot and verified ring are backed
 up externally in `probe-deploy-20261031-135232`. Windows enumerates Sweet iOS
-USB; the user confirms lock/Siri GUI appears. Fresh stability logs are still
-pending, so disappearance of runtime corruption is not established. Do not rerun
+USB; the user confirms lock/Siri GUI appears. The fresh Recovery log is recorded
+below. Do not rerun
 the recorded deployment (`stability_local31g` in the external flash journal).
+
+## Captured local31g stability result
+
+The independently verified `boot-log-20261031-141854` ring contains onlylocal31g,
+422956 console bytes,flush390. Whole log-area SHA256:
+`2d2c907d836101fc72e9afa89ec9cf794006f1ed739b787f376511fb717acaa9`.
+No HFS invalid forward-link/node records, text-page errors, Runtime corruption,
+SpringBoard crash events or kernel panic were found in this captured boot.
+Only the previously unrelated driverkitd crash remains. The captured local31f
+log has repeated SpringBoard crash events and the HFS/text-page failures.
+This supports the staging fix on hardware within this observation window;
+full-volume health and long-term stability have not been established.

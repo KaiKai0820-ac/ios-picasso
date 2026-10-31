@@ -234,7 +234,10 @@ Patch0212 includes GPIO9, extends the WEST map to0xa000, verifies pinmux readbac
 and logs reset4/IRQ5 registers read-only through a separate EAST map. It does not
 toggle reset, upload firmware, or emit touch events. The actual modified source
 compiles as ARM64 Mach-O against matching CI headers/flags, and the patch
-reverse-application check passes. Full-kernel/device testing remains pending.
+reverse-application check passes. Full kernel CI41175144179 then succeeds at
+df79a22,7m53s. Kernel and prepared local31h boot pass archive/kernel/payload/ADT/DTB
+checks and independent mkbootimg reconstruction. The phone is in Recovery;
+device identification remains pending.
 
 ## Separate display and stability work
 
