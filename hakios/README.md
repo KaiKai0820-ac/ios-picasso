@@ -190,3 +190,43 @@ scheduler, hoặc vùng nhớ mà DT/loader dựng cho picasso khác redwood).
 Cách chạy lại: `make kernel`, `fastboot reboot` (loader lên), rồi
 `RAMDISK=prebuilt/userland/hello bash hakios/xl-run.sh 40 "-v debug=0x8 rd=md0 hv_wdt_pet=1 cpus=1 $(cat devices/picasso/soc.args|grep .|tr '\n' ' ')"`
 → đọc các `CPnn` trong log.
+
+## 2026-10-31 11:25 — ROOT CAUSE: `redzone` không khởi tạo (UB) — kernel picasso BOOT TỚI DARWIN USERLAND
+
+**Nguyên nhân gốc** (`osfmk/kern/zalloc.c`, `zone_create_ext()`):
+
+```c
+	uint16_t redzone;            /* zone_elem_adjust_size() chỉ ghi *redzone trong #if KASAN_CLASSIC */
+	...
+	size = zone_elem_adjust_size(name, size, flags, &redzone);
+	...
+		z->z_elem_size = (uint16_t)(size - redzone);   /* size - <rác>  ⇒ UB */
+```
+
+Với `KASAN_CLASSIC` tắt (bản build của ta), `redzone` **không được gán** ⇒ `size - redzone` là UB. clang 15 và clang 18
+(Linux) xử lý UB này khác Apple clang: chúng **bỏ hẳn lệnh ghi `z->z_elem_size`** (disassembly: nhánh cấp phát chỉ có
+`strh … [x23,#56]`, `strh … [x23,#58]`, không có `#52`). Hệ quả: zone VM không có `z_elem_size` ⇒ `zone_cram_early()`
+không tạo được element (`VM boostrap: 0 maps`) ⇒ `zalloc_id(ZONE_ID_VM_MAP, Z_WAITOK)` đi nhánh blocking
+`zone_expand_locked()` trong `kmem_init()` khi `kernel_map` đang được tạo ⇒ **deadlock/panic**.
+
+**Fix (`patches/0012`, 1 dòng):**
+```c
+	uint16_t redzone = 0;   /* zone_elem_adjust_size() only sets it with KASAN_CLASSIC */
+```
+
+**Bằng chứng sau fix (QEMU `-cpu max`, kernel sm7250):**
+```
+resident image at pa fc000000 size 93a00000: it is the root (md0), the payload ramdisk is md1
+VM boostrap: 102 maps, 204 entries and 512 holes available
+launchd.development
+launchd
+SpringBoard.plist
+SpringBoard;/redwood/lib/libhakios.media.dylib mediaserverd;... Sileo;... Preferences
+launchd.darwin, pid 1): writing core to /private/var/cores/launchd.darwin.core   ← tầng sau (userland)
+```
+Tức kernel đi hết `kmem_init → bsd_init → vfs_mountroot (system.apfs) → load_init_program → launchd` và nạp job
+SpringBoard — **giống bản prebuilt của họ**. (Trước fix: `VM boostrap: 0 maps` + panic.)
+
+**Lưu ý công cụ**: QEMU 6.2 của Ubuntu không có `cortex-a76`; chạy `QEMU_CPU=max` (A72 thiếu feature ARMv8.2 nên kernel
+không in gì). `make qemu-open`/`run.sh` dùng ảnh 2,3 GB: dùng `qemu/run-darwin.sh` (map ảnh vào `qemu/ram.img`,
+`--rdres`), không dùng `QEMU_ESP=1` (FAT giới hạn 2 GB).
