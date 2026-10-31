@@ -77,6 +77,14 @@ flags, missing CRC_DONE, RAM mismatches, read errors or reset timeouts stop
 initialization. Tests cover these outcomes using actual extracted functions.
 Hardware validation of this change is pending.
 
+Update2026-10-31: local31j (kernel sourcec13e874, CI41179410783) was deployed
+with readback verification. After a timed retry kept the phone running for
+more than4minutes, the user answered “OK了” to the swipe/click test request.
+This records user-observed touch response. The150second initialization delay
+remains; detailed post-delay controller/frame logs, all gestures and long-term
+stability have not been verified. Earlier local31j reports ended before the
+driver's delayed start and do not establish an initialization failure.
+
 Recovery comparison on the same device: existing Novatek Linux driver reports
 firmware7, matrix18x36, valid1080x2400 info and NORMAL_RUN0xa3; CRC status is04.
 Read-only raw CRC diagnostics nevertheless show golden ILM288823b4,
