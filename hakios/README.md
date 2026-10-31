@@ -60,3 +60,15 @@ IPA/GSI, mpss/smem/imem, PAS ids, tên firmware (`*_ipa_fws`), panel, touch, PMI
 - Nhánh này **không** sửa `xnu/patches` của agy; mọi thay đổi HakiOS nằm dưới `hakios/`.
 - Repo tham chiếu đã clone: `/home/tritm/hakios-u` (core, nhánh `u-boot`),
   `/home/tritm/hakios-sm7325` (device + SoC layer mẫu).
+
+## Pipeline đã dựng (2026-10-31)
+
+| Bước | Lệnh / kết quả |
+|---|---|
+| Firmware | `hakios-mu` = uefi_picasso + `hakios-uefi/hakios.patch` + `files/` + `patches/0002` → `Build/picassoPkg/RELEASE_CLANGPDB/FV/SILICIUM_UEFI.fd` (2 MiB) |
+| Loader | `hakios-u/xnuloader/loader.efi`, build bằng clang-15 + lld-link-15, có `platform_picasso` (`patches/0001`) |
+| Container | `xnuloader/mkpayload.py` → loader.efi + kernel + cmdline + usb |
+| Boot image | `hakios/build-bootimg.py` → gzip(BootShim + FD + XNUP) + picasso.dtb, header v1 (**7.720.960 B**) |
+
+Chi tiết trong `hakios/README.md` mục dưới; boot image hiện tại ở `/tmp/hakios-picasso-boot.img`.
+Backup `boot` trước khi thử: `ad6ea9d0bea679c70c7c3801bbf50939` (128 MiB, trên `/sdcard` của máy).
