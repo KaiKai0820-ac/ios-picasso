@@ -34,3 +34,38 @@ H6/H7/H8 = 0   zone_count_free(vm_map_zone / entry / holes) SAU zone_cram_early
 
 Chi tiết tái lập: `hakios/README.md` mục "2026-10-31 10:05"; nhánh `hakios` của repo này; fork
 `minhtritt1996/hakios-xnu-kernel` nhánh `picasso` (platform + build fix).
+
+## Số liệu bổ sung (zalloc / zcram) — 2026-10-31 10:40
+
+Chuỗi mốc đầy đủ một lần chạy:
+
+```
+CP92 100 101 109 112 113 114 115 116
+CP120 CP121 CP122                       (zalloc_ext -> zalloc_item)
+H20=0                                   z_elems_free của ZONE_ID_VM_MAP = 0
+CP124 CP126                             (zone_expand_locked, đã chiếm expander)
+                                        ... CP127 KHÔNG tới: chết trong zone_allocate_va_locked
+```
+
+Và ngay trong `zcram()` (gọi từ `vm_map_init`):
+
+```
+CP130 H30(pages)=1  H31(chunk_pages)=1  H32(zone_elem_outer_size)=0
+      H34(z_elem_size)=0  H35(z_elems_avail)=0  H36(z_chunk_elems)=0x66  H37(flags)=0
+CP131 H33(z_elems_free sau chunk) = 0
+```
+
+Ngay sau `zone_create_ext(VM_MAP_ZONE_NAME, sizeof(struct _vm_map), ZFLAGS, ZONE_ID_VM_MAP, NULL)`:
+
+```
+H40(z_elem_size)=0  H41(z_elems_avail)=0  H42(zone_elem_outer_size)=0
+```
+
+⇒ Zone `ZONE_ID_VM_MAP` **chưa có `z_elem_size`** tại thời điểm `vm_map_init()` cram nó; `zcram_and_lock()`
+tính `elem_size = zone_elem_outer_size(zone) = 0` rồi chia cho nó ⇒ nghi vấn fault im lặng (không có console).
+Sau đó `zalloc_id()` thấy `z_elems_free == 0` nên đi nhánh blocking `zone_expand_locked()` — mà mở rộng cần
+`kernel_map`, chính là map đang được tạo trong `vm_map_create_options()` ⇒ treo.
+
+Câu hỏi 4: trên redwood, `zone_array[ZONE_ID_VM_MAP].z_elem_size` có khác 0 ngay sau `zone_create_ext()`
+không? Có bước nào (ví dụ `zone_metadata_init()` / `startup_phase >= STARTUP_SUB_ZALLOC`) mà ở một SoC mới
+cần chạy trước `vm_map_init()` không?
