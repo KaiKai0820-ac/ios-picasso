@@ -9,8 +9,9 @@ The active path selects reset4 and IRQ5 states from the live Picasso FDT,
 engineering-resets the controller, releases reset, and verifies the known
 `0c 00 00 72 66 03` trim ID. It follows the pinned vendor NT36675 hardware-CRC
 RAM-download flow: ILM/DLM/info partitions, destination/length/golden CRC banks,
-BLD CRC enable, firmware CRC enable and BOOT_RDY. It requires matching CRCs,
-CRC_DONE with no ILM/DLM errors, reset state REK, firmware7/inverse248,
+BLD CRC enable, firmware CRC enable and BOOT_RDY. Patch0215 adds exact readback
+of all97,584 downloaded bytes while the MCU remains in the bootloader.
+It requires CRC_DONE with no ILM/DLM errors, reset state REK, firmware7/inverse248,
 matrix18x36 and panel1080x2400 before reporting input. It programs no controller
 flash, PMIC, or display power state.
 
@@ -55,3 +56,23 @@ Full128MiB boot SHA256:
 The original Recovery and preceding full boot/ring are preserved. USB
 enumeration is observed; controller CRC/firmware gates, physical input and
 UI response still need on-device verification.
+
+## First active hardware result and patch0215
+
+Fresh local31i ring (387524console bytes, flush91, independently verified
+SHA25670e84444cebe33ea6001fcd2338c0620d9b65ee4a62cd4d1cdf55de47c2bc624)
+shows reset4 high, IRQ5 input, all three partition writes completed, firmware
+INIT0xa0 and CRC_DONE0x4 with no error flags. ILM raw CRC matches, but the
+DLM raw snapshot is0x1377dab7 rather than0x41e3fa54. Our additional comparison
+returns EIO before fw-info or HID polling. This establishes the immediate
+reason input was never enabled; it does not establish the cause of the raw
+DLM difference or prove the touch pipeline works.
+
+The pinned vendor driver uses reset readiness for successful download and
+reads raw CRC result registers separately, four bytes each, on failure.
+Patch0215 matches those read widths, verifies every transferred RAM byte
+before BOOT_RDY and requires hardware CRC status, REK readiness and fw-info.
+A differing post-boot result snapshot is logged, while genuine CRC error
+flags, missing CRC_DONE, RAM mismatches, read errors or reset timeouts stop
+initialization. Tests cover these outcomes using actual extracted functions.
+Hardware validation of this change is pending.

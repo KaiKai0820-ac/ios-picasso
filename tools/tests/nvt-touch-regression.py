@@ -30,7 +30,7 @@ def main():
         if args.source:
             source_path = args.source
         else:
-            for number in ('0210', '0212', '0213'):
+            for number in ('0210', '0212', '0213', '0215'):
                 patch, = (REPO / 'xnu/patches').glob(number + '-*.patch')
                 # 0210 also changes build wiring; extract only the independent driver.
                 subprocess.run(['git', 'apply', '--unsafe-paths', '--include=bsd/dev/picasso_nvt*',
@@ -72,7 +72,7 @@ static struct { vm_offset_t se, gpio_east; unsigned tx_depth, rx_depth; bool dea
             firmware += (REPO / 'tools/tests/nvt-firmware-fixture.c').read_text()
             for name in ('nv_page', 'nv_register', 'nv_write_register', 'nv_write_byte',
                          'nv_read_memory', 'nv_bootloader_reset', 'nv_le32', 'nv_write_le',
-                         'nv_wait_reset', 'nv_download_firmware', 'nv_initialize_panel'):
+                         'nv_wait_reset', 'nv_verify_firmware', 'nv_download_firmware', 'nv_initialize_panel'):
                 firmware += function(source, name)
             firmware += '\nint main(void) { test_firmware(); return 0; }\n'
             path = root / 'firmware.c'

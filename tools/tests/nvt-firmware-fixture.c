@@ -3,7 +3,7 @@
 static int nv_initialize_panel(void);
 static uint8_t memory[0x800000];
 static uint32_t gpios[0x6000 / 4], page, injection;
-static unsigned engineering_resets, releases, boots, total_bytes;
+static unsigned engineering_resets, releases, boots, total_bytes, verified_bytes;
 static uint32_t read_le(uint32_t a, unsigned n)
 {
     uint32_t v = 0;
@@ -30,7 +30,15 @@ static int nv_transfer(const uint8_t *tx, uint8_t *rx, unsigned length)
     }
     unsigned a = page | (tx[0] & 0x7f);
     assert(a + length < sizeof(memory));
-    if (rx) { memset(rx, 0, 2); memcpy(rx + 2, memory + a, length - 2); return 0; }
+    if (rx) {
+        memset(rx, 0, 2); memcpy(rx + 2, memory + a, length - 2);
+        if (a < 0x30000 && !boots && a != 0x1f64e) {
+            verified_bytes += length - 2;
+            if (injection == 5 && a == 0x100) rx[2] ^= 1;
+        }
+        if (a == 0x3f120 || a == 0x3f124) assert(length == 6);
+        return 0;
+    }
     assert(tx[0] & 0x80);
     memcpy(memory + a, tx + 1, length - 1);
     if (a < 0x30000) total_bytes += length - 1;
@@ -40,6 +48,7 @@ static int nv_transfer(const uint8_t *tx, uint8_t *rx, unsigned length)
     }
     if (a == 0x3f0fe) assert(tx[1] == 0x69 && releases == 1);
     if (a == 0x3f10d) {
+        assert(verified_bytes == 80536 + 16792 + 256);
         assert(tx[1] == 1 && (memory[0x3f30e] & 0x80));
         assert(memory[0x22d60] == 0 && memory[0x22d50] == 0xae);
         for (unsigned i = 0; i < sizeof(nv_fw_parts)/sizeof(nv_fw_parts[0]); ++i) {
@@ -54,7 +63,7 @@ static int nv_transfer(const uint8_t *tx, uint8_t *rx, unsigned length)
         assert(read_le(0x3f104, 4) == nv_fw_parts[1].crc);
         store_le(0x3f120, nv_fw_parts[0].crc ^ (injection == 1));
         store_le(0x3f124, nv_fw_parts[1].crc);
-        memory[0x3f133] = injection == 2 ? 5 : 4;
+        memory[0x3f133] = injection == 2 ? 5 : injection == 6 ? 0 : 4;
         memory[0x22d60] = injection == 3 ? 0 : 0xa1;
         boots++;
     }
@@ -64,7 +73,7 @@ static void initialize_mock(unsigned fail)
 {
     memset(memory, 0, sizeof(memory)); memset(gpios, 0, sizeof(gpios));
     memset(&nv, 0, sizeof(nv)); page = 0; injection = fail;
-    engineering_resets = releases = boots = total_bytes = 0;
+    engineering_resets = releases = boots = total_bytes = verified_bytes = 0;
     const uint8_t id[6] = {0x0c,0,0,0x72,0x66,3};
     memcpy(memory + 0x1f64e, id, sizeof(id));
     if (fail == 4) memory[0x1f64e] = 0;
@@ -75,9 +84,11 @@ static void test_firmware(void)
     assert(nv_initialize_panel() == 0 && engineering_resets == 1 && releases == 1 && boots == 1);
     assert(gpios[0x4000/4] == 0x3c3 && gpios[0x5000/4] == 0x1c1);
     assert(total_bytes > 97000); /* real pinned ILM/DLM/info bytes were all transferred */
-    initialize_mock(1); assert(nv_initialize_panel() == EIO);
+    initialize_mock(1); assert(nv_initialize_panel() == 0); /* successful vendor status with changed snapshot */
     initialize_mock(2); assert(nv_initialize_panel() == EIO);
     initialize_mock(3); assert(nv_initialize_panel() == ETIMEDOUT);
     initialize_mock(4); assert(nv_initialize_panel() == ENODEV && boots == 0);
-    puts("PASS: pin/reset ordering, actual firmware partition writes, CRC banks/errors, reset timeout, chip guard");
+    initialize_mock(5); assert(nv_initialize_panel() == EIO && boots == 0);
+    initialize_mock(6); assert(nv_initialize_panel() == EIO);
+    puts("PASS: exact RAM readback, CRC status/read widths, changed snapshot, corrupt RAM, timeout/chip guards");
 }
