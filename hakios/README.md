@@ -121,3 +121,36 @@ hoặc lấy log so sánh từ QEMU (`make qemu-open`, đã cài qemu-system-arm
 QEMU 6.2 không có `cortex-a76` → `QEMU_CPU=cortex-a72`).
 
 Phụ thuộc host: `pip install lzfse` (mkidentity), `xnuloader/build.sh` dùng clang-15 (patch 0005).
+
+## 2026-10-31 09:10 — khoanh vùng treo bằng checkpoint (kết quả cuối)
+
+Thêm checkpoint Bring-up vào XNU (`patches/0006`): `kernel_bootstrap` 50–59, `kernel_bootstrap_thread` 60–62,
+`bsd_init` 70–76, `load_init_program` 77–80.
+
+| Checkpoint | Vị trí | Kết quả trên máy |
+|---|---|---|
+| 10–21 | `arm_init` | qua |
+| 50–55 | `kernel_bootstrap` (vm_mem_bootstrap → clock_init) | qua |
+| 56–59 | `kernel_thread_create` | qua |
+| 60–63 | `kernel_bootstrap_thread` → trước `bsd_init` | qua |
+| 70–73 | `bsd_init` (dev_kmem_init, bsd_bufferinit, **bsd_autoconf/IOKit**, inittodr) | qua |
+| 74–75 | `setconf`, trước `vfs_mountroot` | qua |
+| 76 | **sau `vfs_mountroot` — root mount THÀNH CÔNG** (ramdisk `prebuilt/userland/hello`) | qua |
+| 77 | vào `load_init_program()` | qua |
+| 79/80 | sau `load_init_program_at_path()` (exec được / exec lỗi) | **KHÔNG bắn** — treo bên trong exec |
+
+⇒ Kernel picasso chạy hết bsd_init, mount root, và **treo trong `load_init_program`/exec** (không panic, không về).
+Bước tiếp: checkpoint trong `load_init_program_at_path`/`mach_exec`/Mach-O loader, hoặc dùng userland thật
+(`system.apfs` build từ IPSW 16.5 20F66 iPhone10,3/10,6) thay ramdisk `hello`.
+
+## Nơi lưu bản "chuẩn" để gửi upstream (2026-10-31)
+
+- Fork: `github.com/minhtritt1996/hakios-xnu-kernel`, nhánh **`picasso`**, 4 commit sạch:
+  1. `xnuloader: platform picasso (SM7250, Redmi K30 5G)`
+  2. `build: clang 15 on a Linux host, and QEMU_CPU for an older QEMU`
+  3. `xnu: SETUP/replacecontents builds on a host whose libc has no strlcat`
+  4. `devices/manifest.conf: picasso (Redmi K30 5G, SM7250)`
+- Repo device: `github.com/minhtritt1996/hakios-device-picasso` (`main`), manifest trỏ tới revision
+  `12a3f6695af1b380976f3ad090081c5ee3202042`.
+- Quy trình publish theo `docs/porting/repositories.md#publishing-a-device`: `check` → `split` → push repo → PR chỉ
+  sửa `devices/manifest.conf`.
