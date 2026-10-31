@@ -5,11 +5,13 @@ packaging, presentation worker and GPU-userland build integration are now implem
 in `xnu/picasso-gpu/`, `tools/` and `.github/workflows/gpu-userland.yml`.
 Four changed kernel translation units compile locally for ARM64. Actual-source
 allocator/ring/fence and firmware parser checks pass ASan/UBSan; default ADTs
-remain byte-identical with a fixed seed. Full linking and device execution remain
-to be verified. GPU userland CI41186390350 succeeded at7d9556e; both tests and
+remain byte-identical with a fixed seed. Full kernel compile/link passed in
+CI41186398866 at7d9556e. Device execution remains to be verified.
+GPU userland CI41186390350 succeeded at the same source; both tests and
 all three libraries were downloaded and verified for SHA256, iOS ARM64 target,
-load dependencies and embedded signatures. Kernel CI41186398866 is in progress
-at the same exact source. Hardware page flipping is deferred pending K30 DPU measurements.
+load dependencies and embedded signatures. The independently verified gpu31a
+image is ready for stage1..6 device testing; it has not been flashed.
+Hardware page flipping is deferred pending K30 DPU measurements.
 The detailed work packages below retain the design and acceptance criteria;
 see `xnu/picasso-gpu/SOURCE.md` for implemented arguments and limitations.
 Research and pinned upstream links are in
