@@ -89,8 +89,9 @@ remain identical. Source SHA256, both payload copies, RAM range, image layout
 and output readback are checked. It never flashes a phone.
 
 The console is muted after the first GUI swap, while persistent logging and
-panic rendering remain available. Hardware confirmation of the new display
-behavior is still required. A SpringBoard shared-cache slide SIGBUS observed
-on the previous boot is a separate unresolved stability issue.
+panic rendering remain available. The user confirmed that local31d again
+shows lock/Siri UI and that the console overlay has disappeared. A SpringBoard
+shared-cache slide SIGBUS observed on the previous boot is a separate
+unresolved stability issue.
 
 [source]: https://github.com/LineageOS/android_kernel_xiaomi_sm7250/tree/8e49d06af7ff5757c03ab181874cf1e90a1e1192
