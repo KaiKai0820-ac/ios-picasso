@@ -121,9 +121,14 @@ The named `shim/out/shim-boot-local31e.img` is prepared: 37,130,240 bytes,
 SHA256 `94ba2e2fa6503a64ef7c6c5ce6a47a76751e0a728166aada977c37385136d7f5`.
 Both payload copies, actual boot command, original ADT/full DTB, stock OS
 word and proven RAM range validate. Independent official mkbootimg
-reconstruction is byte-identical. The current known-good local31d image was
-preserved. No probe has been flashed yet; physical Recovery/ADB is needed
-for deployment. The phone continues running the confirmed local31d GUI boot.
+reconstruction is byte-identical. The known-good local31d image was preserved.
+The test was deployed and rebooted at13:01:09, with every written range and
+the full128MiB boot partition verified. Full boot SHA256:
+`6112a4d76e4c13f191bf637cb3ed2b1873be29a85bfe791806894e7c47fc126b`.
+Recovery remains byte-identical. Windows enumerates Sweet iOS USB Ethernet;
+the initial screen observation is the logo. Neither identification nor GUI
+on this test kernel is established yet; the next step is collecting the
+persistent ring through Recovery after the delayed probe has run.
 
 ## Separate display and stability work
 
