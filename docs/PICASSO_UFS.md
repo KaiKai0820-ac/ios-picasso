@@ -41,7 +41,29 @@ local until the lock is reacquired. Writes retain their existing path.
   patch0211, including unlocked recursive I/O.
 - Multi-chunk unaligned reads, partial writes and early-error allocation cleanup
   pass for both versions. This models software interleavings, not UFS hardware.
-- Device validation is pending. The next stability boot must disable the Novatek
+- Device stability validation is pending. The stability boot disables the Novatek
   probe (`picassonvtprobe=0`, `sweettouch=0`) to isolate this change. Touch input
   remains unimplemented; a successful SPI transfer with an all-FF ID is not chip
   identification.
+
+## local31g stability deployment
+
+CI [41173608116](https://github.com/KaiKai0820-ac/ios-picasso/actions/runs/41173608116)
+successfully built source376ada776abdcd62678bd0de898000bba0aaa77a in6m30s.
+The small kernel artifact passes GitHub's ZIP digest, CRC and bundled kernel
+SHA256 checks. Kernel SHA256:
+`eadf99691a2a11655a1186605f37a71d671607462171827165b6512ceb892f3c`.
+
+Named local31g image is37130240 bytes, SHA256:
+`d444162d4c9f934d56a6ae21408221b95603f6347d7b39ebc509745f0a334d25`.
+Both payloads and the actual command, original ADT/full DTB, proven RAM range
+and OS word validate; official mkbootimg reconstruction is byte-identical.
+The command explicitly disables Novatek probing and legacy touch.
+
+At13:52:41 the phone rebooted after verified writes to boot and the dedicated
+log area. Full128MiB boot SHA256:
+`db222c198146ca3d1f78e9dd772d6a7d862d866bb2450dd9eca329fc5225c730`.
+Recovery remains byte-identical. Full previous boot and verified ring are backed
+up externally in `probe-deploy-20261031-135232`. Windows enumerates Sweet iOS
+USB; GUI observation and fresh stability logs are still pending. Do not rerun
+the recorded deployment (`stability_local31g` in the external flash journal).
