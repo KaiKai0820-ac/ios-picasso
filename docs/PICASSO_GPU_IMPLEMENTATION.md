@@ -6,7 +6,10 @@ in `xnu/picasso-gpu/`, `tools/` and `.github/workflows/gpu-userland.yml`.
 Four changed kernel translation units compile locally for ARM64. Actual-source
 allocator/ring/fence and firmware parser checks pass ASan/UBSan; default ADTs
 remain byte-identical with a fixed seed. Full linking and device execution remain
-to be verified. Hardware page flipping is deferred pending K30 DPU measurements.
+to be verified. GPU userland CI41186390350 succeeded at7d9556e; both tests and
+all three libraries were downloaded and verified for SHA256, iOS ARM64 target,
+load dependencies and embedded signatures. Kernel CI41186398866 is in progress
+at the same exact source. Hardware page flipping is deferred pending K30 DPU measurements.
 The detailed work packages below retain the design and acceptance criteria;
 see `xnu/picasso-gpu/SOURCE.md` for implemented arguments and limitations.
 Research and pinned upstream links are in
@@ -28,6 +31,15 @@ The image `shim/out/shim-boot-local31j.img` has SHA256
 The last verified complete 128-MiB boot partition hash is
 `e5f01335ad791ad86bc79862d985d44958ecdb6b9a0882a292da881ad87f27ab`.
 Existing HFS allocation errors remain an independent unresolved issue.
+
+`tools/picasso-gpu-boot.py` builds a named offline test image from the exact
+local31j baseline. Without `--kernel` it validates the baseline and prints the
+proposed configuration. It appends only the GPU ADT node (with a fresh phandle),
+preserves touch/stock DTB/RAM/OS settings, rejects truncated or duplicate boot
+arguments, and independently reconstructs the final Android image with mkbootimg.
+It never connects to a phone. Start with `--level 6 --marker gpu31a`; firmware
+is mandatory from level11, and keeping the service requires level21+ with
+authenticated ZAP mode3. Never infer hardware success from a packaged image.
 
 ## Completed: extract the board configuration
 
