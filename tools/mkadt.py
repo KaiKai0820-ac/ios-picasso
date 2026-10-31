@@ -4,7 +4,7 @@
 Only what the early boot path actually reads (see NOTES.md); every MMIO
 address comes from the sweet live FDT. Usage:  mkadt.py OUT.adt [--dump] [--qemu] [--highmem]
 """
-import hashlib, os, struct, sys
+import argparse, hashlib, os, struct, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import adt  # noqa: E402
@@ -108,13 +108,20 @@ def node(name, props=(), children=()):
     return n
 
 
-def build(seed=None, qemu=False, highmem=False, board='sweet'):
+def build(seed=None, qemu=False, highmem=False, board='sweet', ram_base=None, ram_size=None):
     """qemu=True: same tree, but with QEMU virt's GIC addresses and CNTFRQ (tools/qemu-sweet.py)."""
     phys_base, mem_size = (HIGH_PHYS_BASE, HIGH_MEM_SIZE) if highmem else (PHYS_BASE, MEM_SIZE)
     gicd, gicr, timebase = (QEMU_GICD, QEMU_GICR, QEMU_TIMEBASE) if qemu else (GICD, GICR, TIMEBASE)
     prof = BOARDS.get(board, BOARDS['sweet'])
     if 'phys_base' in prof:
         phys_base, mem_size = prof['phys_base'], prof['mem_size']
+    if (ram_base is None) != (ram_size is None):
+        raise ValueError('ram_base and ram_size must be supplied together')
+    if ram_base is not None:
+        # The early 16K-granule page tables map RAM in 32 MiB blocks.
+        if ram_base <= 0 or ram_size <= 0 or (ram_base | ram_size) & (0x2000000 - 1):
+            raise ValueError('RAM base and size must be positive, 32 MiB aligned values')
+        phys_base, mem_size = ram_base, ram_size
     fb_base, fb_size = prof['fb']
     ufs_base, ufs_size = prof['ufs']
     manifest = hashlib.sha384(prof['manifest']).digest()
@@ -279,10 +286,20 @@ def build(seed=None, qemu=False, highmem=False, board='sweet'):
 
 
 if __name__ == '__main__':
-    board = 'picasso' if '--picasso' in sys.argv else 'sweet'
-    root = build(qemu='--qemu' in sys.argv, highmem='--highmem' in sys.argv, board=board)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('out')
+    parser.add_argument('--dump', action='store_true')
+    parser.add_argument('--qemu', action='store_true')
+    parser.add_argument('--highmem', action='store_true')
+    parser.add_argument('--picasso', action='store_true')
+    parser.add_argument('--ram-base', type=lambda s: int(s, 0), help='verified contiguous RAM base')
+    parser.add_argument('--ram-size', type=lambda s: int(s, 0), help='verified contiguous RAM size')
+    args = parser.parse_args()
+    board = 'picasso' if args.picasso else 'sweet'
+    root = build(qemu=args.qemu, highmem=args.highmem, board=board,
+                 ram_base=args.ram_base, ram_size=args.ram_size)
     blob = adt.serialize(root)
-    open(sys.argv[1], 'wb').write(blob)
-    if '--dump' in sys.argv:
+    open(args.out, 'wb').write(blob)
+    if args.dump:
         adt.dump(adt.parse(blob)[0])
-    print(f'{sys.argv[1]}: {len(blob)} bytes, board {board}', file=sys.stderr)
+    print(f'{args.out}: {len(blob)} bytes, board {board}', file=sys.stderr)

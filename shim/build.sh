@@ -10,6 +10,8 @@
 #                decompressed kernel is ~48 MB and would overwrite the ramdisk
 #                at 16 MB). Proven on the device, see docs/02-boot-image-layout.md.
 #   --dtb PATH   device tree to embed (default dtb/boot_unpacked/dtb).
+#   --ram-base/--ram-size  verified contiguous picasso RAM range; use the
+#                same overrides when building the ADT with tools/mkadt.py.
 #   --extra      extra kernel command line arguments (appended).
 #
 # Two things this bootloader insists on, both learned the hard way:
@@ -34,11 +36,15 @@ kernel_addr=0x8000
 payload_off=0			# 0: the payload stays in the ramdisk part
 cmdline="console=null"
 extra=""
+picasso=0
+picasso_ram_base=0xac000000
+picasso_ram_size=0x50000000
 osver=(--os_version 17.0.0 --os_patch_level 2035-06)
 
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--picasso)
+		picasso=1
 		# The layout the phone's own boot image uses (proven on this
 		# device): the kernel at 8 KB, the ramdisk and the device tree
 		# far out, so the file is as big as the tree's address. The file
@@ -54,7 +60,6 @@ while [ $# -gt 0 ]; do
 		# The kernel's RAM, for the same reason: the bootloader does not
 		# pass the tree in x0 here, and everything below 0x10000000 is
 		# protected. These are the banks it hands the kernel.
-		cflags="$cflags -DRAM_FALLBACK_BASE=0xac000000UL -DRAM_FALLBACK_SIZE=0x50000000UL"
 		# Reading an address the bootloader did not map kills the core on
 		# this board, so the shim must not go looking for the device tree:
 		# every board value is compiled in instead.
@@ -73,6 +78,14 @@ while [ $# -gt 0 ]; do
 		;;
 	--dtb)
 		dtb="$2"
+		shift
+		;;
+	--ram-base)
+		picasso_ram_base="$2"
+		shift
+		;;
+	--ram-size)
+		picasso_ram_size="$2"
 		shift
 		;;
 	--dtb=*)
@@ -113,6 +126,16 @@ while [ $# -gt 0 ]; do
 	esac
 	shift
 done
+if [ "$picasso" = 1 ]; then
+	# Match tools/mkadt.py's overrides when the live board has a RAM hole.
+	for value in "$picasso_ram_base" "$picasso_ram_size"; do
+		[[ "$value" =~ ^(0x[0-9a-fA-F]+|[0-9]+)$ ]] || { echo 'invalid RAM range' >&2; exit 1; }
+	done
+	(( picasso_ram_base > 0 && picasso_ram_size > 0 && (picasso_ram_base | picasso_ram_size) % 0x2000000 == 0 )) || {
+		echo 'RAM base and size must be positive and 32 MiB aligned' >&2; exit 1;
+	}
+	cflags="$cflags -DRAM_FALLBACK_BASE=${picasso_ram_base}UL -DRAM_FALLBACK_SIZE=${picasso_ram_size}UL"
+fi
 [ -n "$extra" ] && cmdline="$cmdline $extra"
 if [ "${arg_small:-0}" = 1 ]; then
 	ramdisk_offset=0x40000
