@@ -1,0 +1,88 @@
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -30,6 +30,7 @@
+ #include <sys/uio.h>
+ #include <miscfs/devfs/devfs.h>
+ #include <kern/locks.h>
++#include <kern/kalloc.h>
+ #include <kern/clock.h>
+ #include <kern/sched_prim.h>
+ #include <machine/machine_routines.h>
+@@ -76,7 +77,7 @@
+ 
+ #define UFS_BLOCK       4096u
+ #define BOUNCE_SIZE     (1u << 20)
+-#define STAGE_SIZE      (256u << 10)   /* upper quarter of the bounce area, see DMA_STAGE */
++#define STAGE_SIZE      (256u << 10)   /* maximum private read snapshot */
+ #define PRDT_CHUNK      (256u << 10)            /* PRDT byte count field: 18 bits */
+ /* The bounce path needs one entry per 256 KiB; a direct transfer into a
+  * buffer needs one per page, so the table is sized for the worse case. */
+@@ -105,7 +106,6 @@
+ #define DMA_UCD         0x1000                  /* 128 byte aligned */
+ #define DMA_BOUNCE      0x4000
+ #define DMA_SIZE        (DMA_BOUNCE + BOUNCE_SIZE)
+-#define DMA_STAGE       (DMA_BOUNCE + BOUNCE_SIZE - STAGE_SIZE)  /* wired, no separate kalloc */
+ 
+ static struct {
+ 	vm_offset_t regs;
+@@ -1124,6 +1124,8 @@
+ sweet_ufs_strategy(buf_t bp)
+ {
+ 	int error = 0;
++	char *stage = NULL;
++	uint32_t stage_bytes = 0;
+ 	caddr_t vaddr = NULL;
+ 	uint64_t off = (uint64_t)buf_blkno(bp) * su.secsize;
+ 	uint32_t count = buf_count(bp);
+@@ -1142,6 +1144,17 @@
+ 	}
+ 	if (count == 0) {
+ 		goto done;
++	}
++	/* A copy into the mapped caller can fault and re-enter this driver.
++	 * Its snapshot must therefore belong to this request, survive
++	 * releasing sweet_ufs_lock, and stay outside every DMA/log buffer. */
++	if (rd) {
++		stage_bytes = MIN(count, STAGE_SIZE);
++		stage = kalloc_data(stage_bytes, Z_WAITOK);
++		if (stage == NULL) {
++			error = ENOMEM;
++			goto done;
++		}
+ 	}
+ 	if (buf_map(bp, &vaddr)) {
+ 		error = EIO;
+@@ -1213,17 +1226,17 @@
+ 				su.io_phase = 32;
+ 				su.strat_step = 3;
+ 				if (!error) {
+-					/* Copy out of the driver lock: the caller's buffer may fault and
+-					 * come back through this driver wanting the lock we would hold.
+-					 * The stage is the upper 256 KiB of the wired bounce area, so no
+-					 * allocation can fail and no extra memory is reserved. */
+-					char *stage = (char *)(su.dma + DMA_STAGE);
++					/* Snapshot while locked; the private wired allocation cannot
++					 * be overwritten by another reader, logger or DMA command.
++					 * Keep the caller copy unlocked to permit fault-driven I/O. */
++					volatile uint32_t copied = 0;
+ 					memcpy(stage, (const char *)bounce + skip, want);
+ 					ufs_unlock();
+ 					su.io_phase = 40;
+-					ufs_copy_out(vaddr + done, stage, want, &su.strat_done);
++					ufs_copy_out(vaddr + done, stage, want, &copied);
+ 					su.io_phase = 41;
+ 					ufs_lock(UFS_LK_STRATEGY);
++					su.strat_done = copied;
+ 					su.strat_step = 4;
+ 				}
+ 			}
+@@ -1253,6 +1266,9 @@
+ 	buf_unmap(bp);
+ 
+ done:
++	if (stage != NULL) {
++		kfree_data(stage, stage_bytes);
++	}
+ 	if (su.trace) {
+ 		sweet_tracef("SWEET UFS out: %c lba 0x%llx ss %u err %d done %u\n",
+ 		    rd ? 'R' : 'W', (unsigned long long)buf_blkno(bp),
