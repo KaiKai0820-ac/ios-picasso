@@ -130,6 +130,37 @@ the initial screen observation is the logo. Neither identification nor GUI
 on this test kernel is established yet; the next step is collecting the
 persistent ring through Recovery after the delayed probe has run.
 
+### First hardware result and clock-check correction
+
+The user confirms local31e shows lock/Siri UI with no touch response.
+Fresh ring `boot-log-20261031-130553` contains only marker local31e;
+338,201 console bytes, flush47. Its full4MiB+4KiB read matches an independent
+phone SHA256. The delayed probe executes, then exits before serial-engine
+access or any SPI transaction:
+
+```
+PICASSO NVT: clock vote=0xbc1000 rcg=0 cfg=0x100000 dfs=0x21
+PICASSO NVT: clock branch 0x18008 halted (0x80000002)
+PICASSO NVT: initialization stopped; GUI input is unchanged
+```
+
+This exposed a probe check error. At the pinned Linux revision, gcc-lito's
+wrapper1 slave AHB branch declares HWCG bit1 at0x18008. `clk-branch.c` skips
+the halt poll when HWCG is enabled; an idle voted branch can have CLK_OFF set.
+The revised probe follows that rule only for this declared HWCG branch,
+checks that all requested vote bits latched, and uses Linux's branch2 ON/FSM
+condition for the other branches. It preserves HWCG and does not force clocks
+on by changing branch configuration. Both modified source files compile
+locally and the regenerated patch reverse-checks successfully. This correction
+still needs a new full-kernel build and hardware result.
+
+The same ring separately records a SpringBoard exception, shared-cache slide
+errors and an HFS catalog-node forward-link error. Recovery raw reads of the
+reported node19212 have valid links19218/19210; this does not establish that
+the full filesystem is healthy. No filesystem repair or root rewrite was
+performed. The runtime failures need separate investigation; at least the
+first SpringBoard/text-page errors precede the delayed touch hardware probe.
+
 ## Separate display and stability work
 
 `tools/picasso-quiet-boot.py` repacks the existing verified boot with

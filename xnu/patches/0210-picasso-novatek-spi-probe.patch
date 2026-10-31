@@ -30,7 +30,7 @@
  	if (st.started) {
 --- /dev/null
 +++ b/bsd/dev/picasso_nvt.c
-@@ -0,0 +1,376 @@
+@@ -0,0 +1,402 @@
 +/*
 + * Opt-in picasso Novatek SPI identification, not a working touch driver.
 + * Board facts: docs/PICASSO_TOUCH.md; Linux sm7250 at 8e49d06a.
@@ -126,10 +126,38 @@
 +}
 +
 +static bool
++nv_branch_ready(uint32_t offset)
++{
++	/* gcc-lito declares HWCG only for the wrapper1 slave AHB branch.
++	 * clk_branch_wait() skips its halt bit while HWCG is enabled: an idle,
++	 * correctly voted clock can report CLK_OFF until a bus access occurs. */
++	uint32_t value = nv_read(nv.gcc, offset);
++	if (offset == 0x18008u && (value & (1u << 1))) {
++		printf("PICASSO NVT: slave AHB hardware-gated (%#x); halt poll skipped\n", value);
++		return true;
++	}
++	for (unsigned i = 0; i < 5000; ++i) {
++		value = nv_read(nv.gcc, offset);
++		uint32_t state = value & 0xf0000000u;
++		/* Same enabling condition as Linux clk_branch2_check_halt(). */
++		if (!(state & (1u << 31)) || state == 0x20000000u) {
++			return true;
++		}
++		delay(1);
++	}
++	printf("PICASSO NVT: clock branch %#x halted (%#x)\n", offset, value);
++	return false;
++}
++
++static bool
 +nv_clocks(void)
 +{
 +	/* Lito offsets differ from sweet. Only wrapper1/global SE7 is voted. */
 +	nv_write(nv.gcc, NV_GCC_VOTE, nv_read(nv.gcc, NV_GCC_VOTE) | NV_CLOCK_MASK);
++	if ((nv_read(nv.gcc, NV_GCC_VOTE) & NV_CLOCK_MASK) != NV_CLOCK_MASK) {
++		printf("PICASSO NVT: clock votes did not latch; stopping\n");
++		return false;
++	}
 +	uint32_t dfs = nv_read(nv.gcc, NV_RCG + 0x14u);
 +	uint32_t cfg = nv_read(nv.gcc, NV_RCG + 4u);
 +	printf("PICASSO NVT: clock vote=%#x rcg=%#x cfg=%#x dfs=%#x\n",
@@ -152,9 +180,7 @@
 +	}
 +	const uint32_t branches[] = {0x23140, 0x23138, 0x18004, 0x18008, 0x1813c};
 +	for (unsigned i = 0; i < sizeof(branches) / sizeof(branches[0]); ++i) {
-+		if (!nv_clear(nv.gcc, branches[i], 1u << 31)) {
-+			printf("PICASSO NVT: clock branch %#x halted (%#x)\n",
-+			    branches[i], nv_read(nv.gcc, branches[i]));
++		if (!nv_branch_ready(branches[i])) {
 +			return false;
 +		}
 +	}
