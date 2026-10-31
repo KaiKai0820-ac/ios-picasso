@@ -113,8 +113,17 @@ source tree. These checks verify compilation and patch placement, **not
 hardware communication**. Full-kernel CI run
 [`41169768099`](https://github.com/KaiKai0820-ac/ios-picasso/actions/runs/41169768099)
 then built and linked the probe successfully at commit `4f36537`, with the build
-job taking 7m14s. Packaging awaits the verified artifact download; no probe has
-been flashed yet. The phone continues running the confirmed local31d GUI boot.
+job taking 7m14s. The artifact archive matches GitHub's SHA256, and the kernel
+matches its bundled `SHA256SUMS`:
+`7f6829d1944f81e8e24b30d035dc486400cae784c52a7b60dd2eb9e0388ce43c`.
+
+The named `shim/out/shim-boot-local31e.img` is prepared: 37,130,240 bytes,
+SHA256 `94ba2e2fa6503a64ef7c6c5ce6a47a76751e0a728166aada977c37385136d7f5`.
+Both payload copies, actual boot command, original ADT/full DTB, stock OS
+word and proven RAM range validate. Independent official mkbootimg
+reconstruction is byte-identical. The current known-good local31d image was
+preserved. No probe has been flashed yet; physical Recovery/ADB is needed
+for deployment. The phone continues running the confirmed local31d GUI boot.
 
 ## Separate display and stability work
 
