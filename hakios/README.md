@@ -154,3 +154,39 @@ Bước tiếp: checkpoint trong `load_init_program_at_path`/`mach_exec`/Mach-O 
   `12a3f6695af1b380976f3ad090081c5ee3202042`.
 - Quy trình publish theo `docs/porting/repositories.md#publishing-a-device`: `check` → `split` → push repo → PR chỉ
   sửa `devices/manifest.conf`.
+
+## 2026-10-31 10:05 — kênh quan sát mới + điểm treo chính xác
+
+**Vấn đề cũ**: log kernel ngừng vào buffer loader sau `console_init`, nên "treo ở vm_page_bootstrap"
+chỉ là giới hạn quan sát. `loader_checkpoint()` cũng không dùng để bisect được (mỗi phiên loader chỉ chạy
+kernel 1 lần; và tôi đã đọc nhầm dòng "kernel returned" nằm trong log cũ).
+
+**Kênh mới (patch `0007`)**: `loader_cp_mark(n)` ghi `"CPnn "` trực tiếp vào ring log của loader
+(`loader_log_putc`), nên **một lần chạy** thu được toàn bộ dấu mốc kernel đã đi qua. Đã đặt 31 mốc trong
+`vm_map.c`, `vm_kern.c`, `vm_init.c`, `startup.c`, `bsd_init.c`.
+
+**Chuỗi treo đo được (một lần chạy, kernel trả về đúng hạn):**
+
+```
+CP92 CP100 CP101 CP109 CP112 CP113 CP114 CP115 CP116        (rồi dừng)
+```
+
+| Mốc | Ý nghĩa |
+|---|---|
+| 92 | sau `printf("VM boostrap: …")` |
+| 100 | sau `VM_PAGE_MOVE_STOLEN` |
+| 101 | sau `PE_parse_boot_argn("malloc_no_cow")` |
+| 109 | `vm_map_init()` trả về |
+| 112/113 | qua `vm_map_will_allocate_early_map` |
+| 114 | `pmap_kernel()` trả về |
+| 115 | vào `vm_map_create_options()` |
+| 116 | trước `zalloc_id(ZONE_ID_VM_MAP, Z_WAITOK \| Z_NOFAIL \| Z_ZERO)` |
+| **117** | **không tới** ⇒ **treo trong `zalloc_id()` của zone allocator** |
+
+⇒ `kmem_init()` → `vm_map_create_options()` → **`zalloc_id(ZONE_ID_VM_MAP, Z_WAITOK)` không trả về**.
+Đây là điểm nghẽn cụ thể cần xử lý cho SM7250 (zone allocator phải cấp phát/mở rộng → phụ thuộc timer,
+scheduler, hoặc vùng nhớ mà DT/loader dựng cho picasso khác redwood).
+
+Cách chạy lại: `make kernel`, `fastboot reboot` (loader lên), rồi
+`RAMDISK=prebuilt/userland/hello bash hakios/xl-run.sh 40 "-v debug=0x8 rd=md0 hv_wdt_pet=1 cpus=1 $(cat devices/picasso/soc.args|grep .|tr '\n' ' ')"`
+→ đọc các `CPnn` trong log.
