@@ -110,8 +110,11 @@ Both the new source and its legacy-driver entry point compile locally as
 ARM64 Mach-O objects against the headers and compile flags from successful
 CI run `41087536020`. The patch reverse-applies cleanly to the resulting
 source tree. These checks verify compilation and patch placement, **not
-hardware communication**. No probe kernel has been linked or flashed yet;
-the phone continues running the confirmed local31d GUI boot.
+hardware communication**. Full-kernel CI run
+[`41169768099`](https://github.com/KaiKai0820-ac/ios-picasso/actions/runs/41169768099)
+then built and linked the probe successfully at commit `4f36537`, with the build
+job taking 7m14s. Packaging awaits the verified artifact download; no probe has
+been flashed yet. The phone continues running the confirmed local31d GUI boot.
 
 ## Separate display and stability work
 
