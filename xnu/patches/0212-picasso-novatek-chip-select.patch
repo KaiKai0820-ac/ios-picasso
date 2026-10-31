@@ -1,0 +1,65 @@
+--- a/bsd/dev/picasso_nvt.c
++++ b/bsd/dev/picasso_nvt.c
+@@ -20,6 +20,7 @@
+ #define NV_SPI_PA        0x00984000u
+ #define NV_GCC_PA        0x00100000u
+ #define NV_TLMM_WEST     0x0f500000u
++#define NV_TLMM_EAST     0x0f900000u
+ #define NV_GCC_VOTE      0x52008u
+ #define NV_RCG           0x18140u
+ #define NV_CLOCK_MASK    ((0xfu << 18) | (1u << 23))
+@@ -49,7 +50,7 @@
+ #define NV_PROBE_MAX    32u
+ 
+ static struct {
+-	vm_offset_t se, gcc, gpio;
++	vm_offset_t se, gcc, gpio, gpio_east;
+ 	uint32_t tx_depth, rx_depth;
+ 	bool started, dead;
+ } nv;
+@@ -174,13 +175,28 @@
+ 		printf("PICASSO NVT: unsupported, busy, or nonempty serial engine; stopping\n");
+ 		return false;
+ 	}
+-	/* GPIO6/7/8 live in WEST on lito, qup11 is mux1, 6mA, no pull.
+-	 * Do not touch reset GPIO4, IRQ GPIO5, or the generic GPIO9 CS pin. */
+-	for (unsigned pin = 6; pin <= 8; ++pin) {
++	/* Live /soc/ts_novatek pinctrl-0 separately selects ts_cs_active:
++	 * GPIO9 qup11, 6mA, no pull. The SPI controller's GPIO6/7/8 list is
++	 * only the data/clock group, not the complete touch pin configuration.
++	 * All four pins live in WEST, with qup11 at mux1. */
++	for (unsigned pin = 6; pin <= 9; ++pin) {
+ 		uint32_t offset = pin * 0x1000u;
+ 		uint32_t cfg = nv_read(nv.gpio, offset);
+-		nv_write(nv.gpio, offset, (cfg & ~0x3ffu) | (1u << 2) | (2u << 6));
+-	}
++		uint32_t expected = (1u << 2) | (2u << 6);
++		nv_write(nv.gpio, offset, (cfg & ~0x3ffu) | expected);
++		uint32_t active = nv_read(nv.gpio, offset);
++		printf("PICASSO NVT: pin%u cfg=%#x -> %#x io=%#x%s\n",
++		    pin, cfg, active, nv_read(nv.gpio, offset + 4u),
++		    pin == 9 ? " chip-select" : "");
++		if ((active & 0x3ffu) != expected) {
++			printf("PICASSO NVT: pin%u configuration did not latch; stopping\n", pin);
++			return false;
++		}
++	}
++	/* Read-only reset/IRQ diagnostics; no reset toggle or firmware write. */
++	printf("PICASSO NVT: reset4 cfg=%#x io=%#x irq5 cfg=%#x io=%#x\n",
++	    nv_read(nv.gpio_east, 0x4000u), nv_read(nv.gpio_east, 0x4004u),
++	    nv_read(nv.gpio_east, 0x5000u), nv_read(nv.gpio_east, 0x5004u));
+ 	/* GENI FIFO mode, with interrupts polled rather than routed to a CPU. */
+ 	nv_write(nv.se, 0xe1cu, 0);
+ 	nv_write(nv.se, 0xe18u, 0);
+@@ -348,8 +364,9 @@
+ 	printf("PICASSO NVT: identification-only probe, no reset or firmware upload\n");
+ 	nv.gcc = ml_io_map(NV_GCC_PA, 0x60000);
+ 	nv.se = ml_io_map(NV_SPI_PA, 0x4000);
+-	nv.gpio = ml_io_map(NV_TLMM_WEST, 0x9000);
+-	if (!nv.gcc || !nv.se || !nv.gpio || !nv_clocks() || !nv_engine()) {
++	nv.gpio = ml_io_map(NV_TLMM_WEST, 0xa000);
++	nv.gpio_east = ml_io_map(NV_TLMM_EAST, 0x6000);
++	if (!nv.gcc || !nv.se || !nv.gpio || !nv.gpio_east || !nv_clocks() || !nv_engine()) {
+ 		printf("PICASSO NVT: initialization stopped; GUI input is unchanged\n");
+ 		return;
+ 	}

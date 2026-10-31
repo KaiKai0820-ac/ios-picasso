@@ -17,6 +17,7 @@ Recovery root ADB and the phone's live FDT agree on:
 | Touch transfer configuration | mode 0, 8 bits, 5 MHz maximum |
 | Reset / IRQ | TLMM GPIO4 / GPIO5 |
 | Serial pins | GPIO6, GPIO7, GPIO8, function `qup11` |
+| Touch chip select | GPIO9, function `qup11`, 6mA, no pull |
 | TLMM region | `0x0f000000`, size `0x01000000` |
 | Trim ID | `0c 00 00 72 66 03` |
 | Firmware / PID | version 7 / 5931 |
@@ -25,9 +26,11 @@ Recovery root ADB and the phone's live FDT agree on:
 | Selected firmware | novatek_nt36672c_g7a_fw02.bin |
 
 The FDT's SPI controller default maximum is not the touch device's frequency;
-use the latter's 5 MHz setting. The generic pinctrl initially includes GPIO9,
-but the picasso override uses only GPIO6/7/8. Do not copy the generic pin list
-or the sweet driver's north-TLMM base.
+use the latter's 5 MHz setting. The picasso SPI controller override lists only
+GPIO6/7/8, but **the touch device separately selects `ts_cs_active` on GPIO9**
+through its own `pinctrl-0`. Both groups are necessary. Earlier notes and the
+initial probe incorrectly treated the controller's group as the complete pin
+configuration. Do not use the sweet driver's north-TLMM base.
 
 ## Verified reference and firmware
 
@@ -63,7 +66,8 @@ Binary, source snapshot and comparison manifest remain outside Git in
 
 1. Establish a picasso-specific GENI SPI transport, clocks and pinmux from the
    Linux reference and live board values. Use bounded command timeouts and
-   stop on transport errors. No controller MMIO probe has been attempted yet.
+   stop on transport errors. local31f reaches SPI but returns an all-FF trim ID;
+   the initial probe's missing GPIO9 chip-select configuration is corrected in0212.
 2. Read and match the trim ID before selecting the memory map. Read the
    firmware state; if host download is required, use the matching firmware
    and port the vendor partition/CRC sequence. A raw linear firmware write
@@ -200,6 +204,37 @@ The user reports local31f remains at the logo. Initial HFS/SpringBoard failures
 precede the150s probe. A definite shared UFS staging race was separately reproduced
 and patched; see [PICASSO_UFS.md](PICASSO_UFS.md). The next stability boot disables
 this probe explicitly, retaining `sweettouch=0`.
+
+### Live upstream audit and chip-select correction (2026-10-31)
+
+The user's original repository was checked live at
+[`dipa-studio/ios-sweet@45263bee`](https://github.com/dipa-studio/ios-sweet/tree/45263bee51df4a0f55cdf9c649af886399488ddb).
+Its README specifies Redmi Note10 Pro/SM7150 and Goodix GT9896 over I2C, not
+Novatek SPI on SM7250. Patches0058/0060/0063/0071 are byte-identical to our local
+versions after line-ending normalization. Patch0062 differs only in the existing
+Picasso RPMh/cmd-db/USB-rail additions. No upstream touch implementation was
+missing from this checkout.
+
+The original Picasso fork was also checked live: default `hakios` atb946d2ad
+and `agy` atd3d9c2e each contain203 XNU patches already byte-identical to ours.
+The `main` branch has115 matching patches, and `omp` has the same touch patches
+(its only differing XNU patch is USB reset handling0171). These checked branches
+do not add a Novatek XNU driver. External snapshots and verified Git blob hashes
+are saved in `diagnostics/upstream-touch-20261031` outside Git.
+
+The audit exposed a specific omission in our own probe. Saved live FDT SHA256
+`57576eb51c207af433413b781c2d2226c64338dd587488c79d042f8b61ec7291`
+has `/soc/ts_novatek/pinctrl-0 = <0x446 0x447 0x448>`. The final reference resolves
+to `ts_cs_active`, with GPIO9/qup11/6mA/no pull. The pinned Linux Picasso dtsi
+independently agrees. Linux `pinctrl-lito.c` places GPIO9 in WEST with mux1.
+The old probe configured only GPIO6/7/8 and left CS dependent on bootloader state.
+This can explain an all-FF response, but is not yet proven to be the cause.
+
+Patch0212 includes GPIO9, extends the WEST map to0xa000, verifies pinmux readback,
+and logs reset4/IRQ5 registers read-only through a separate EAST map. It does not
+toggle reset, upload firmware, or emit touch events. The actual modified source
+compiles as ARM64 Mach-O against matching CI headers/flags, and the patch
+reverse-application check passes. Full-kernel/device testing remains pending.
 
 ## Separate display and stability work
 
