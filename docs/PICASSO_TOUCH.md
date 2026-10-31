@@ -5,6 +5,10 @@ Power and volume-down events work. Touch remains disabled: the existing
 `sweet_touch.c` probes Goodix/FocalTech over I2C and does not drive this board's
 Novatek SPI controller. `sweettouch=1` is not a fix.
 
+Latest local31h test identifies the actual Novatek chip after fixing the separate
+GPIO9 chip-select group: trim `0c 00 00 72 66 03` matches. Firmware/init state is
+not ready and there is still no touch event path; see the final result below.
+
 ## Observed hardware
 
 Recovery root ADB and the phone's live FDT agree on:
@@ -269,3 +273,36 @@ verification and rebooted at14:20:53. Full128MiB boot SHA256:
 Recovery is unchanged. Full preceding boot/ring are in external
 `probe-deploy-20261031-142045`. Await the delayed probe and fresh Recovery log;
 no hardware ID or touch functionality is established yet.
+
+### local31h result: first verified Novatek identification
+
+Fresh `boot-log-20261031-142704` contains onlylocal31h,328215 console bytes,
+flush81. Full log-area SHA256 independently matches Recovery:
+`be87d6b929457b173c489184e2e8e7359a779a158327e0e70a883cccd35c7c65`.
+
+```
+PICASSO NVT: pin9 cfg=0x1 -> 0x84 io=0x1 chip-select
+PICASSO NVT: reset4 cfg=0x201 io=0 irq5 cfg=0x201 io=0
+PICASSO NVT: trim err=0 id=0c 00 00 72 66 03
+PICASSO NVT: matched NT36675 map; fw err=0 version=222 inverse=2 matrix=222x87
+PICASSO NVT: event page restore=0
+PICASSO NVT: probe complete match=1; no touch events enabled
+```
+
+Pins6/7/8 also change from0x1 to0x84. The exact trim ID matches the earlier
+Android observation. This crosses the first acceptance milestone: responding
+controller identification through XNU SPI. The firmware fields are invalid
+(version/inverse are not complementary; matrix should be18x36). Reset4 remains
+a low GPIO output, and IRQ5 is still configured as an output: these were only
+read by the probe and need the vendor initialization sequence. Invalid fields
+at this stage do not establish a corrupt firmware file or prove that upload
+is the only missing step. Linux boot firmware update is enabled, and the
+matching verified binary is already available externally if needed.
+
+Next port the reference engineering-reset/GPIO-release/bootloader-reset flow,
+configure IRQ as input, and validate firmware state. If required, implement the
+vendor firmware partition/CRC sequence before attempting touch reports. Reuse
+SweetHID after real down/move/up contacts are decoded; do not enable the legacy
+Goodix I2C driver. No HFS invalid-node, text-page/runtime corruption, SpringBoard
+crash or kernel panic records appear in this captured boot; driverkitd has one
+unrelated crash. Phone is left in Recovery with ADB enabled for continued work.
