@@ -230,3 +230,19 @@ SpringBoard — **giống bản prebuilt của họ**. (Trước fix: `VM boostr
 **Lưu ý công cụ**: QEMU 6.2 của Ubuntu không có `cortex-a76`; chạy `QEMU_CPU=max` (A72 thiếu feature ARMv8.2 nên kernel
 không in gì). `make qemu-open`/`run.sh` dùng ảnh 2,3 GB: dùng `qemu/run-darwin.sh` (map ảnh vào `qemu/ram.img`,
 `--rdres`), không dùng `QEMU_ESP=1` (FAT giới hạn 2 GB).
+
+## 2026-10-31 11:30 — kernel ta == kernel tham chiếu (đo song song trong QEMU)
+
+| | kernel ta (sau fix `redzone = 0`) | kernel `prebuilt` của họ |
+|---|---|---|
+| `VM boostrap` | `102 maps, 204 entries, 512 holes` | `102 maps, 204 entries, 512 holes` |
+| userland init (`/redwood/etc/rc`) | `=== 36 checks, 0 failed ===` | như nhau |
+| launchd (libignition) | `ignition blob not available` → `failed to query hardware target: 22` | **giống hệt** |
+| kernel sau đó | `initproc failed to start ...` (panic theo thiết kế) | **giống hệt** |
+
+⇒ Bản build của ta đã **tương đương** bản tham chiếu. Lỗi `hardware target` là giới hạn của QEMU (thiếu dữ liệu
+phần cứng thật), nên bước kiểm tiếp theo **phải chạy trên picasso**:
+
+```
+bash hakios/phone-darwin.sh          # flash loader-only -> nạp system.apfs 2,3 GB -> chạy kernel fix + root.apfs
+```
