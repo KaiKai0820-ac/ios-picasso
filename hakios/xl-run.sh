@@ -21,7 +21,7 @@ if ! fastboot devices 2>/dev/null | grep -q xnuloader; then
 	exit 1
 fi
 
-K=hakios-kernel; [ -f "$K" ] || K=prebuilt/hakios-kernel
+K=${KERNEL:-hakios-kernel}; [ -f "$K" ] || K=prebuilt/hakios-kernel
 CKOPT=
 RM=${RAMDISK:-}; ROPT=""; [ -n "$RM" ] && ROPT="ramdisk=$RM"
 [ -n "$CKPT" ] && CKOPT="--checkpoint $CKPT"
