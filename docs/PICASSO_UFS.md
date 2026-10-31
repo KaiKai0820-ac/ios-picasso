@@ -65,5 +65,6 @@ log area. Full128MiB boot SHA256:
 `db222c198146ca3d1f78e9dd772d6a7d862d866bb2450dd9eca329fc5225c730`.
 Recovery remains byte-identical. Full previous boot and verified ring are backed
 up externally in `probe-deploy-20261031-135232`. Windows enumerates Sweet iOS
-USB; GUI observation and fresh stability logs are still pending. Do not rerun
+USB; the user confirms lock/Siri GUI appears. Fresh stability logs are still
+pending, so disappearance of runtime corruption is not established. Do not rerun
 the recorded deployment (`stability_local31g` in the external flash journal).
