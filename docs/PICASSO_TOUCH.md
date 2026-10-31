@@ -161,6 +161,19 @@ the full filesystem is healthy. No filesystem repair or root rewrite was
 performed. The runtime failures need separate investigation; at least the
 first SpringBoard/text-page errors precede the delayed touch hardware probe.
 
+The HWCG correction then built successfully in run
+[`41171448815`](https://github.com/KaiKai0820-ac/ios-picasso/actions/runs/41171448815),
+7m4s, at commit `18eabeb`. The downloaded archive and kernel both pass their
+SHA256 checks. Named local31f boot SHA256:
+`17ab31eaab549d9baa7c46ad9cdafbaae1030b7650de71cca6479889c2a7800b`.
+It independently reconstructs byte-identically with official mkbootimg and
+retains the original ADT/full DTB, RAM range and OS word. It was deployed and
+rebooted at13:21:50; full128MiB boot readback SHA256:
+`94f27f01638b45b56b901ba722d1f36901774e3a84e35b9c1c998c7cc86324cc`.
+Original Recovery is unchanged. Its delayed hardware result is pending.
+Recovery also confirms raw touch bounds0..1079/0..2399, matching the existing
+SweetHID input normalization before its display offset is applied.
+
 ## Separate display and stability work
 
 `tools/picasso-quiet-boot.py` repacks the existing verified boot with
