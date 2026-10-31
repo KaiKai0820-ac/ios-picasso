@@ -72,3 +72,33 @@ IPA/GSI, mpss/smem/imem, PAS ids, tên firmware (`*_ipa_fws`), panel, touch, PMI
 
 Chi tiết trong `hakios/README.md` mục dưới; boot image hiện tại ở `/tmp/hakios-picasso-boot.img`.
 Backup `boot` trước khi thử: `ad6ea9d0bea679c70c7c3801bbf50939` (128 MiB, trên `/sdcard` của máy).
+
+## Kết quả trên máy (2026-10-31 07:58)
+
+Chain HakiOS **chạy được trên picasso**:
+
+| Mốc | Bằng chứng |
+|---|---|
+| UEFI (Mu-Silicium picasso + HakiOS XnuLoader) | boot image 7.720.960 B flash vào `boot`, máy lên USB `product: xnuloader` |
+| Loader | log trên máy: `platform picasso`, `display 1080 x 2400 at a0000000`, `CNTFRQ=19200000`, `usb: started` |
+| Kernel build riêng (sm7250) | `hakios-kernel` 14.800.464 B, `kernel.ver=...-sm7250-...` |
+| Kernel chạy | `kernel returned: log at ..., 1306 bytes` — kernel chạy 20 s rồi trả về loader |
+| Log kernel | `kprintf initialized`, `initialize_screen: b=A0000000 w=438 h=960`, `gic: v3 0xfffffff155064000`, `Darwin Kernel Version 22.5.0 ... sm7250`, `vm_page_bootstrap: 269057 free pages` |
+
+Kernel `prebuilt` (redwood/sc7280) **treo cứng tại entry** — phải build kernel với config picasso
+(`make picasso_defconfig && make kernel`) mới chạy.
+
+### Sửa toolchain để build được kernel trên Ubuntu 22.04
+- `patches/0003`: `xnu-deps/host/bin/xnu-clang` dùng clang-15 và bỏ `-ftrivial-auto-var-init=zero`
+  (clang <16 từ chối cờ này).
+- `patches/0004`: `SETUP/replacecontents` cần `strlcat` (glibc < 2.38 chưa có) — shim static.
+- EDK2: Python 3.10 thiếu `tomllib` → file `tomllib.py` re-export `tomli` trong venv.
+- `patches/0001`/`0002`: platform_picasso + bỏ UniXNUPkg/DarwinBootPkg + `-DPAYLOAD_BLOCK` cho BootShim.
+
+### Vòng lặp test
+`hakios/xl-run.sh [SECS] [args...]` — stage payload + `oem run` + `get_staged` (không dùng `xl` vì
+`xl enter` cần ảnh U-Boot/Silicium và `getvar` dễ treo). Sau kernel treo phải **power-cycle**;
+kernel trả về bình thường thì loader vẫn sống.
+
+### Tiếp theo
+`CONFIG_HAIKOS_UFS=y` + `system.apfs` trong RAM → launchd (bước 3 của guide).
