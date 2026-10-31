@@ -76,3 +76,11 @@ A differing post-boot result snapshot is logged, while genuine CRC error
 flags, missing CRC_DONE, RAM mismatches, read errors or reset timeouts stop
 initialization. Tests cover these outcomes using actual extracted functions.
 Hardware validation of this change is pending.
+
+Recovery comparison on the same device: existing Novatek Linux driver reports
+firmware7, matrix18x36, valid1080x2400 info and NORMAL_RUN0xa3; CRC status is04.
+Read-only raw CRC diagnostics nevertheless show golden ILM288823b4,
+golden DLM28cb9da3, result ILMacc6fe83 and result DLM4d845bdc. These values
+do not match the pinned startup constants or one another. Separate4byte and
+combined8byte reads agree. This supports treating post-boot snapshots as
+diagnostic, and does not establish why the registers differ after startup.
