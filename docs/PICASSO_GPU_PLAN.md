@@ -3,6 +3,9 @@
 Source review: 2026-10-31; Apollo refreshed to `892b91d31ed6064924117120a7155d077a621af8`.
 This is a plan, not an implemented or phone-tested K30 GPU driver.
 
+The concrete work packages, first-patch scope and completed offline board inventory
+are in [PICASSO_GPU_IMPLEMENTATION.md](PICASSO_GPU_IMPLEMENTATION.md).
+
 ## Current phone
 
 The user-confirmed local31j image still uses the framebuffer software path. Its manifest
@@ -52,8 +55,9 @@ libraries alone cannot supply the missing hardware driver.
 
 Concrete A650 assumptions requiring adaptation include reported chip ID `0x06050002`,
 GMU chip word `0x06050200`, GMEM `0x120000` (1152KiB), a650 ZAP firmware and its
-reserved loading address. Our A620 reference instead has chip ID `0x06020000`,
-512KiB GMEM and `a620_zap`. Clocks, power/HFI tables and address mappings also need
+reserved loading address. The generic A620 base DTS instead has chip ID `0x06020000`;
+our saved final live K30 tree has `0x06020001` (derived GMU word `0x06020100`).
+The A620 vendor core uses 512KiB GMEM and `a620_zap`. Clocks, power/HFI tables and address mappings also need
 board validation. The display code assumes framebuffer reservation
 `0x9c000000 + 0x2300000`, SM8250 DPU pipe registers and display-SMMU routing;
 our current K30 framebuffer is `0xa0000000`.
@@ -84,7 +88,9 @@ The pinned LineageOS SM7250 vendor kernel provides the following reference confi
   `a620_zap`, A620 clock-gating/protection tables, and shared A650 GBIF parameters.
 
 These are source configuration facts, not fresh register/firmware observations from this
-phone. Validate against its saved/live device tree and its own firmware before execution.
+phone. The completed offline inventory confirms the saved final live tree's chip ID
+is `0x06020001`; the generic base DTS value above is not the final board value.
+Validate its own firmware and running hardware state before execution.
 The reused A650 firmware names do not make the A650 initialization sequence identical.
 
 ## Recommended implementation order
