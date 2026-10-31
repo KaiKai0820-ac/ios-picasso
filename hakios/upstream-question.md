@@ -92,3 +92,23 @@ Giả thuyết cần kiểm chứng phía upstream:
 1. `struct zone` có biến thể theo cấu hình (dẫn tới lệch layout giữa `zalloc.c` và người đọc `vm_map_zone`), hoặc
 2. có bước nào (ví dụ `zone_init()`/`zone_metadata_init()` ở `STARTUP_SUB_ZALLOC`) phải chạy *trước* để
    `zone_array[]` có layout/kích thước thật, và trên một SoC mới thứ tự này bị lệch.
+
+## 2026-10-31 11:05 — bất thường của compiler + workaround
+
+Disassembly `zone_create_ext` (nhánh cấp phát, offset 0xa484–0xa4e8 của object):
+```
+a484: udiv  x8, x8, x20        (chunk_elems = alloc / size)
+a488: strh  w8, [x23, #58]     (z_chunk_elems)
+a48c: ldrh  w1, [x23, #52]     (dump cua ta)
+a4a4: ldrh  w8, [x23, #52]     ← đọc volatile của fix-up
+a4a8: tbz   w19, #5, ...       ← KHÔNG có store #52, KHÔNG có nhánh theo w8
+```
+⇒ clang **giữ lệnh đọc volatile nhưng bỏ lệnh ghi volatile** trong nhánh này (chỉ còn store ở nhánh
+`ZC_OBJ_CACHE`: `strh w20, [x23, #52]`). Vì vậy `z->z_elem_size = size - redzone` không bao giờ tới bộ nhớ.
+
+Workaround (`patches/0011`): gọi hàm ở TU khác — `hakios_zone_force_elem_size(void *zone, uint32_t size)`
+trong `osfmk/vm/vm_kern.c` (ghi thẳng offset 52) — nên compiler buộc phải giữ; kernel đã có
+`bl _hakios_zone_force_elem_size` ở 2 điểm.
+
+Câu hỏi thêm: đây có phải bug clang/TU này đã biết (ví dụ do `__attribute__((musttail))` hoặc LTO/`-O2` +
+`#define` nào đó trong `zalloc.c`) hay là dấu hiệu source trong repo không khớp với bản build prebuilt?
