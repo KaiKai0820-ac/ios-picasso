@@ -102,3 +102,22 @@ kernel trả về bình thường thì loader vẫn sống.
 
 ### Tiếp theo
 `CONFIG_HAIKOS_UFS=y` + `system.apfs` trong RAM → launchd (bước 3 của guide).
+
+## Trạng thái 2026-10-31 08:25 (sau khi test trên máy)
+
+| Hạng mục | Kết quả |
+|---|---|
+| UEFI + loader trên picasso | ✅ `platform picasso`, `display 1080x2400 at a0000000`, USB `xnuloader` |
+| Identity thật (DT Apple `DeviceTree.d22ap.im4p`) | ✅ loader 71.680 B (trước: 66.048 B placeholder) |
+| UFS trong loader | ✅ `ufs: unit 5 ... 109 partitions and 6 units` |
+| Kernel sm7250 chạy | ✅ in log, trả về loader sau `loader_return_after` |
+| Kernel dừng ở | ❌ ngay sau `vm_page_bootstrap` / `VM boostrap: 0 maps...` (giống nhau với `cpus=1`, `cpus=8`, có/không `soc_*`) |
+| `bootcpu=7` | ❌ PSCI: `core 700: the firmware answers 0 to the request to start it` |
+| Checkpoints 10–21 (đều trong `arm_init`) | đã qua hết |
+
+Kết luận: `arm_init` xong; dừng trong `machine_startup`/`kernel_bootstrap` trước printf kế tiếp.
+Bước tiếp: thêm `loader_checkpoint()` vào các mốc sau `vm_page_bootstrap` (patch riêng) để khoanh vùng,
+hoặc lấy log so sánh từ QEMU (`make qemu-open`, đã cài qemu-system-arm + AAVMF;
+QEMU 6.2 không có `cortex-a76` → `QEMU_CPU=cortex-a72`).
+
+Phụ thuộc host: `pip install lzfse` (mkidentity), `xnuloader/build.sh` dùng clang-15 (patch 0005).

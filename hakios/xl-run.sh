@@ -23,8 +23,9 @@ fi
 
 K=hakios-kernel; [ -f "$K" ] || K=prebuilt/hakios-kernel
 CKOPT=
+RM=${RAMDISK:-}; ROPT=""; [ -n "$RM" ] && ROPT="ramdisk=$RM"
 [ -n "$CKPT" ] && CKOPT="--checkpoint $CKPT"
-xnuloader/mkpayload.py -o run-payload.bin kernel=$K $CKOPT \
+xnuloader/mkpayload.py -o run-payload.bin kernel=$K $ROPT $CKOPT \
 	--cmdline "loader_return_after=$SECS epoch=$(date +%s) sb_delay=8 $ARGS" >/dev/null || exit 1
 echo "xl-run: payload $(stat -c %s run-payload.bin) B, args: $ARGS"
 timeout 60 fastboot stage run-payload.bin 2>&1 | tail -1 || { echo "xl-run: stage hung (loader can ket; can power-cycle)"; exit 1; }
