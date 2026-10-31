@@ -65,6 +65,21 @@ static struct { vm_offset_t se, gpio_east; unsigned tx_depth, rx_depth; bool dea
                             '-Wno-unused-function', '-fsanitize=address,undefined',
                             '-g', str(path), '-o', str(exe)], check=True)
             subprocess.run([str(exe)], check=True)
+        if source_path.with_name('picasso_nvt_firmware.h').exists():
+            (root / 'picasso_nvt_firmware.h').write_bytes(source_path.with_name('picasso_nvt_firmware.h').read_bytes())
+            firmware = prelude.replace('#define NV_FW_VERSION 7u\n', '')
+            firmware += '#include "picasso_nvt_firmware.h"\n'
+            firmware += (REPO / 'tools/tests/nvt-firmware-fixture.c').read_text()
+            for name in ('nv_page', 'nv_register', 'nv_write_register', 'nv_write_byte',
+                         'nv_read_memory', 'nv_bootloader_reset', 'nv_le32', 'nv_write_le',
+                         'nv_wait_reset', 'nv_download_firmware', 'nv_initialize_panel'):
+                firmware += function(source, name)
+            firmware += '\nint main(void) { test_firmware(); return 0; }\n'
+            path = root / 'firmware.c'
+            path.write_text(firmware)
+            subprocess.run(['cc', '-std=c11', '-Wall', '-Wextra', '-Werror', '-Wno-unused-function',
+                            '-fsanitize=address,undefined', '-g', str(path), '-o', str(root / 'firmware')], check=True)
+            subprocess.run([str(root / 'firmware')], check=True)
         print('PASS: actual driver SPI FIFO streaming and contact/HID regressions (ASan/UBSan)')
 
 

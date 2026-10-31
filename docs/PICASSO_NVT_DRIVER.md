@@ -35,6 +35,11 @@ Linux to reconstruct the patched driver and test its actual FIFO and HID loop
 with ASan/UBSan. Tests include full-duplex partial words and64-byte boundaries,
 transfer error/timeout, down/move/up, slot10, empty releases, malformed IDs,
 duplicate slots, coordinate bounds and releasing held fingers after bus errors.
+With `--source /path/to/patched/bsd/dev/picasso_nvt.c` and its generated firmware
+header present, tests also exercise the actual init/download functions against
+a mock controller: reset ordering, all real partition bytes, CRC bank values,
+CRC failure flags, reset timeouts and rejecting a different chip. The mock
+supplies CRC results; hardware CRC execution is still a device-only check.
 These tests do not establish physical touch operation; that requires the new
 kernel's CRC/firmware/frame logs and observed UI interaction on the phone.
 
