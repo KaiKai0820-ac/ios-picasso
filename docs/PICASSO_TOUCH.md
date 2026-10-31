@@ -170,9 +170,36 @@ It independently reconstructs byte-identically with official mkbootimg and
 retains the original ADT/full DTB, RAM range and OS word. It was deployed and
 rebooted at13:21:50; full128MiB boot readback SHA256:
 `94f27f01638b45b56b901ba722d1f36901774e3a84e35b9c1c998c7cc86324cc`.
-Original Recovery is unchanged. Its delayed hardware result is pending.
+Original Recovery is unchanged. Its delayed hardware result is recorded below.
 Recovery also confirms raw touch bounds0..1079/0..2399, matching the existing
 SweetHID input normalization before its display offset is applied.
+
+### local31f transport result
+
+The independently verified ring in `boot-log-20261031-133218` reaches the SPI
+engine after the corrected HWCG check:
+
+```
+PICASSO NVT: slave AHB hardware-gated (0x80000002); halt poll skipped
+PICASSO NVT: SE=0x984000 fw=0x101 status=0 tx=0x20102864 rx=0x20104800 fifo-off=0
+PICASSO NVT: trim err=0 id=ff ff ff ff ff ff
+PICASSO NVT: probe complete match=0; no touch events enabled
+```
+
+Transfer completion does not establish a responding controller: no valid ID
+matched. Power/reset/chip-select/state remain to be checked. At the pinned Linux
+reference, `nt36672c/nt36xxx.c:nvt_ts_check_chip_ver_trim()` resets the bootloader
+before each trim read. The reference Picasso dtsi declares reset register
+0x03f0fe and SPI-fast register0x03f310; `nvt_bootloader_reset()` writes0x69,
+waits5ms, then disables SPI-fast mode. Probe initialization also performs an
+engineering reset before raising reset GPIO4 and waiting10ms. The dtsi includes
+a separate TDDI reset on PM8150L GPIO3. These are reference sequences to investigate,
+not steps executed by the current identification-only probe.
+
+The user reports local31f remains at the logo. Initial HFS/SpringBoard failures
+precede the150s probe. A definite shared UFS staging race was separately reproduced
+and patched; see [PICASSO_UFS.md](PICASSO_UFS.md). The next stability boot disables
+this probe explicitly, retaining `sweettouch=0`.
 
 ## Separate display and stability work
 
