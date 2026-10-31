@@ -1,0 +1,446 @@
+--- a/bsd/dev/picasso_nvt.c
++++ b/bsd/dev/picasso_nvt.c
+@@ -1,7 +1,8 @@
+ /*
+- * Opt-in picasso Novatek SPI identification, not a working touch driver.
++ * Opt-in Picasso NT36675/NT36672C SPI touch driver and read-only probe.
+  * Board facts: docs/PICASSO_TOUCH.md; Linux sm7250 at 8e49d06a.
+- * No reset, firmware upload, PMIC access, DMA, or touch events in this stage.
++ * Active mode follows the vendor RAM-download/hardware-CRC sequence.
++ * No PMIC programming, DMA, persistent controller flash, or legacy I2C.
+  */
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+ #include <sys/param.h>
+@@ -15,7 +16,11 @@
+ 
+ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+ extern kern_return_t thread_terminate(thread_t);
++extern void sweet_hid_touch(int finger, int down, int x, int y);
+ bool picasso_nvt_init(void);
++
++#include "picasso_nvt_protocol.h"
++#include "picasso_nvt_firmware.h"
+ 
+ #define NV_SPI_PA        0x00984000u
+ #define NV_GCC_PA        0x00100000u
+@@ -47,12 +52,12 @@
+ #define NV_DONE         (1u << 0)
+ #define NV_ERRORS       (0x0eu | (3u << 24) | (3u << 28))
+ #define NV_FIFO_EVENTS  ((1u << 26) | (1u << 27) | (1u << 30))
+-#define NV_PROBE_MAX    32u
++#define NV_PROBE_MAX    128u
+ 
+ static struct {
+ 	vm_offset_t se, gcc, gpio, gpio_east;
+ 	uint32_t tx_depth, rx_depth;
+-	bool started, dead;
++	bool started, dead, active;
+ } nv;
+ static int nv_wait_chan;
+ 
+@@ -193,7 +198,7 @@
+ 			return false;
+ 		}
+ 	}
+-	/* Read-only reset/IRQ diagnostics; no reset toggle or firmware write. */
++	/* Record bootloader reset/IRQ state before optional active initialization. */
+ 	printf("PICASSO NVT: reset4 cfg=%#x io=%#x irq5 cfg=%#x io=%#x\n",
+ 	    nv_read(nv.gpio_east, 0x4000u), nv_read(nv.gpio_east, 0x4004u),
+ 	    nv_read(nv.gpio_east, 0x5000u), nv_read(nv.gpio_east, 0x5004u));
+@@ -242,7 +247,7 @@
+ 		}
+ 		delay(1);
+ 	}
+-	nv.dead = true; /* A single error ends this probe, even if abort succeeds. */
++	nv.dead = true; /* Stop this worker on a bus error, even if abort succeeds. */
+ 	printf("PICASSO NVT: transfer stopped abort=%d status=%#x irq=%#x\n",
+ 	    done, nv_read(nv.se, NV_STATUS), nv_read(nv.se, NV_IRQ));
+ 	nv_write(nv.se, NV_IRQ_CLR, 0xffffffffu);
+@@ -251,8 +256,8 @@
+ static int
+ nv_transfer(const uint8_t *tx, uint8_t *rx, unsigned length)
+ {
+-	if (nv.dead || !tx || !length || length > NV_PROBE_MAX ||
+-	    length > nv.tx_depth * 4u || length > nv.rx_depth * 4u) {
++	/* Stream through the FIFO: a complete 67-byte event exceeds its 64 bytes. */
++	if (nv.dead || !tx || !length || length > NV_PROBE_MAX) {
+ 		return EINVAL;
+ 	}
+ 	if (nv_read(nv.se, NV_STATUS) & 0x1001u) {
+@@ -355,19 +360,300 @@
+ 	return err;
+ }
+ 
++/* Active mode is specific to the verified NT36675 map and Picasso panel. */
++static int
++nv_write_register(uint32_t address, const uint8_t *data, unsigned length)
++{
++	uint8_t tx[NV_PROBE_MAX];
++	if (!data || !length || length >= NV_PROBE_MAX ||
++	    address > 0xffffffu || (address & 0x7fu) + length > 128u) {
++		return EINVAL;
++	}
++	int error = nv_page(address);
++	if (error) {
++		return error;
++	}
++	tx[0] = (uint8_t)(address & 0x7fu) | 0x80u;
++	memcpy(tx + 1, data, length);
++	return nv_transfer(tx, NULL, length + 1u);
++}
++
++static int
++nv_write_byte(uint32_t address, uint8_t value)
++{
++	return nv_write_register(address, &value, 1);
++}
++
++static int
++nv_read_memory(uint32_t address, uint8_t *data, unsigned length)
++{
++	while (length) {
++		unsigned count = MIN(length, MIN(NV_PROBE_MAX - 2u, 128u - (address & 0x7fu)));
++		int error = nv_register(address, data, count);
++		if (error) {
++			return error;
++		}
++		address += count;
++		data += count;
++		length -= count;
++	}
++	return 0;
++}
++
++static int
++nv_bootloader_reset(void)
++{
++	int error = nv_write_byte(0x3f0feu, 0x69);
++	if (!error) {
++		nv_sleep(5);
++		error = nv_write_byte(0x3f310u, 0); /* Disable SPI fast-read mode. */
++	}
++	return error;
++}
++
++static uint32_t
++nv_le32(const uint8_t *bytes)
++{
++	return (uint32_t)bytes[0] | ((uint32_t)bytes[1] << 8) |
++	       ((uint32_t)bytes[2] << 16) | ((uint32_t)bytes[3] << 24);
++}
++
++static int
++nv_write_le(uint32_t address, uint32_t value, unsigned bytes)
++{
++	uint8_t data[4];
++	if (bytes == 0 || bytes > sizeof(data)) {
++		return EINVAL;
++	}
++	for (unsigned i = 0; i < bytes; ++i) {
++		data[i] = (uint8_t)(value >> (i * 8u));
++	}
++	return nv_write_register(address, data, bytes);
++}
++
++static int
++nv_wait_reset(uint8_t minimum)
++{
++	uint8_t status[5] = {0};
++	for (unsigned attempt = 0; attempt < 50; ++attempt) {
++		int error = nv_read_memory(0x22d60u, status, sizeof(status));
++		if (error) {
++			return error;
++		}
++		if (status[0] >= minimum && status[0] <= 0xaf) {
++			printf("PICASSO NVT: firmware reset state=%#x\n", status[0]);
++			return 0;
++		}
++		nv_sleep(10);
++	}
++	printf("PICASSO NVT: firmware reset timeout status=%02x %02x %02x %02x %02x\n",
++	    status[0], status[1], status[2], status[3], status[4]);
++	return ETIMEDOUT;
++}
++
++static int
++nv_download_firmware(void)
++{
++	/* Same RAM download/BLD CRC sequence as vendor hw_crc=2. No flash erase. */
++	int error = nv_bootloader_reset();
++	if (error) {
++		return error;
++	}
++	printf("PICASSO NVT: RAM firmware version=%u sha256=%s partitions=%u\n",
++	    NV_FW_VERSION, NV_FW_SHA256, (unsigned)(sizeof(nv_fw_parts) / sizeof(nv_fw_parts[0])));
++	for (unsigned i = 0; i < sizeof(nv_fw_parts) / sizeof(nv_fw_parts[0]); ++i) {
++		const struct nv_fw_partition *part = &nv_fw_parts[i];
++		uint32_t address = part->sram, image = part->image, remaining = part->size + 1u;
++		if (image > sizeof(nv_firmware) || remaining > sizeof(nv_firmware) - image ||
++		    address >= 0x30000u || remaining > 0x30000u - address) {
++			return EINVAL;
++		}
++		printf("PICASSO NVT: partition%u image=%#x sram=%#x bytes=%u\n",
++		    i, image, address, remaining);
++		while (remaining) {
++			unsigned count = MIN(remaining, MIN(31u, 128u - (address & 0x7fu)));
++			error = nv_write_register(address, nv_firmware + image, count);
++			if (error) {
++				return error;
++			}
++			address += count;
++			image += count;
++			remaining -= count;
++		}
++	}
++	/* Length is the vendor's final-byte index, not the number transferred. */
++	const uint32_t destinations[] = {0x3f128, 0x3f12c};
++	const uint32_t lengths[] = {0x3f118, 0x3f130};
++	const uint32_t golden[] = {0x3f100, 0x3f104};
++	for (unsigned i = 0; i < 2; ++i) {
++		const struct nv_fw_partition *part = &nv_fw_parts[i];
++		if ((error = nv_write_le(destinations[i], part->sram, 3)) ||
++		    (error = nv_write_le(lengths[i], part->size, 3)) ||
++		    (error = nv_write_le(golden[i], part->crc, 4))) {
++			return error;
++		}
++	}
++	uint8_t crc_enable = 0;
++	if ((error = nv_register(0x3f30eu, &crc_enable, 1)) ||
++	    (error = nv_write_byte(0x3f30eu, crc_enable | 0x80u)) ||
++	    (error = nv_write_byte(0x22d60u, 0)) ||
++	    (error = nv_write_byte(0x22d50u, 0xae)) ||
++	    (error = nv_write_byte(0x3f10du, 1))) {
++		return error;
++	}
++	nv_sleep(5);
++	error = nv_wait_reset(0xa0);
++	uint8_t result[8] = {0}, flags = 0;
++	int crc_error = nv_read_memory(0x3f120u, result, sizeof(result));
++	if (!crc_error) {
++		crc_error = nv_register(0x3f133u, &flags, 1);
++	}
++	printf("PICASSO NVT: hardware CRC err=%d flags=%#x ILM=%#x/%#x DLM=%#x/%#x\n",
++	    crc_error, flags, nv_le32(result), nv_fw_parts[0].crc,
++	    nv_le32(result + 4), nv_fw_parts[1].crc);
++	if (error || crc_error) {
++		return error ? error : crc_error;
++	}
++	if (nv_le32(result) != nv_fw_parts[0].crc ||
++	    nv_le32(result + 4) != nv_fw_parts[1].crc || !(flags & 4u) || (flags & 3u)) {
++		return EIO;
++	}
++	return nv_wait_reset(0xa1);
++}
++
++static int
++nv_initialize_panel(void)
++{
++	/* Select the touch device's reset/IRQ active states, not another panel's. */
++	uint32_t reset = (7u << 6) | 3u | (1u << 9); /* GPIO, 16mA, pull-up, output */
++	uint32_t irq = (7u << 6) | 1u;               /* GPIO, 16mA, pull-down, input */
++	nv_write(nv.gpio_east, 0x4004u, nv_read(nv.gpio_east, 0x4004u) & ~2u);
++	nv_write(nv.gpio_east, 0x4000u, (nv_read(nv.gpio_east, 0x4000u) & ~0x3ffu) | reset);
++	nv_write(nv.gpio_east, 0x5000u, (nv_read(nv.gpio_east, 0x5000u) & ~0x3ffu) | irq);
++	if ((nv_read(nv.gpio_east, 0x4000u) & 0x3ffu) != reset ||
++	    (nv_read(nv.gpio_east, 0x5000u) & 0x3ffu) != irq) {
++		return EIO;
++	}
++	int error = nv_write_byte(0x7fff80u, 0x5a); /* Vendor engineering reset. */
++	if (error) {
++		return error;
++	}
++	nv_sleep(1);
++	nv_write(nv.gpio_east, 0x4004u, nv_read(nv.gpio_east, 0x4004u) | 2u);
++	nv_sleep(10);
++	printf("PICASSO NVT: active reset4 cfg=%#x io=%#x irq5 cfg=%#x io=%#x\n",
++	    nv_read(nv.gpio_east, 0x4000u), nv_read(nv.gpio_east, 0x4004u),
++	    nv_read(nv.gpio_east, 0x5000u), nv_read(nv.gpio_east, 0x5004u));
++	if (!(nv_read(nv.gpio_east, 0x4004u) & 2u)) {
++		return EIO;
++	}
++	if ((error = nv_bootloader_reset())) {
++		return error;
++	}
++	uint8_t id[6] = {0};
++	error = nv_register(0x1f64eu, id, sizeof(id));
++	if (error || id[0] != 0x0c || id[3] != 0x72 || id[4] != 0x66 || id[5] != 3) {
++		printf("PICASSO NVT: chip ID lost after reset err=%d id=%02x %02x %02x %02x %02x %02x\n",
++		    error, id[0], id[1], id[2], id[3], id[4], id[5]);
++		return error ? error : ENODEV;
++	}
++	return nv_download_firmware();
++}
++
++static void
++nv_release_contacts(struct nv_frame *previous)
++{
++	for (unsigned i = 0; i < NV_CONTACTS; ++i) {
++		if (previous->mask & (1u << i)) {
++			sweet_hid_touch((int)i, 0, previous->x[i], previous->y[i]);
++		}
++	}
++	previous->mask = 0;
++}
++
++static int
++nv_run_touch(void)
++{
++	int error = nv_initialize_panel();
++	if (error) {
++		return error;
++	}
++	uint8_t info[16] = {0};
++	error = nv_read_memory(0x22d78u, info, sizeof(info));
++	unsigned width = ((unsigned)info[4] << 8) | info[5];
++	unsigned height = ((unsigned)info[6] << 8) | info[7];
++	printf("PICASSO NVT: initialized fw err=%d version=%u inverse=%u matrix=%ux%u panel=%ux%u\n",
++	    error, info[0], info[1], info[2], info[3], width, height);
++	if (error || info[0] != NV_FW_VERSION || (unsigned)info[0] + info[1] != 255u ||
++	    info[2] != 18 || info[3] != 36 || width != NV_PANEL_X || height != NV_PANEL_Y) {
++		return error ? error : EIO;
++	}
++	struct nv_frame previous = {0};
++	uint32_t frames = 0, invalid = 0, changes = 0, consecutive_bad = 0;
++	printf("PICASSO NVT: HID touch enabled; 1080x2400, 10 contacts, 8ms polling\n");
++	while (!nv.dead) {
++		uint8_t packet[NV_PACKET_BYTES] = {0};
++		/* One SPI read for the entire frame; FIFO is serviced while it streams. */
++		error = nv_register(0x22d00u, packet, sizeof(packet));
++		if (error) {
++			break;
++		}
++		struct nv_frame frame = {0};
++		int decoded = nv_decode_packet(packet, sizeof(packet), &frame);
++		if (decoded != NV_FRAME_VALID) {
++			invalid++;
++			consecutive_bad++;
++			if (consecutive_bad >= 20) {
++				printf("PICASSO NVT: invalid stream first=%02x %02x %02x %02x %02x %02x\n",
++				    packet[0], packet[1], packet[2], packet[3], packet[4], packet[5]);
++				error = EIO;
++				break;
++			}
++		} else {
++			consecutive_bad = 0;
++			for (unsigned i = 0; i < NV_CONTACTS; ++i) {
++				bool was = previous.mask & (1u << i), down = frame.mask & (1u << i);
++				if (down && (!was || frame.x[i] != previous.x[i] || frame.y[i] != previous.y[i])) {
++					sweet_hid_touch((int)i, 1, frame.x[i], frame.y[i]);
++					changes++;
++				} else if (was && !down) {
++					sweet_hid_touch((int)i, 0, previous.x[i], previous.y[i]);
++					changes++;
++				}
++			}
++			previous = frame;
++		}
++		frames++;
++		if (frames % 500u == 0) {
++			printf("PICASSO NVT: frames=%u invalid=%u changes=%u mask=%#x irq=%u\n",
++			    frames, invalid, changes, previous.mask, nv_read(nv.gpio_east, 0x5004u) & 1u);
++		}
++		nv_sleep(8);
++	}
++	nv_release_contacts(&previous);
++	return error ? error : EIO;
++}
++
+ static void
+ nv_probe_once(void)
+ {
+ 	/* The persistent log flusher defaults to 120s. Probe once after it starts. */
+ 	printf("PICASSO NVT: identification probe starts in 150s\n");
+ 	nv_sleep(150000);
+-	printf("PICASSO NVT: identification-only probe, no reset or firmware upload\n");
++	printf(nv.active ? "PICASSO NVT: active driver, reset/RAM firmware/HID\n" :
++	    "PICASSO NVT: identification-only probe, no reset or firmware upload\n");
+ 	nv.gcc = ml_io_map(NV_GCC_PA, 0x60000);
+ 	nv.se = ml_io_map(NV_SPI_PA, 0x4000);
+ 	nv.gpio = ml_io_map(NV_TLMM_WEST, 0xa000);
+ 	nv.gpio_east = ml_io_map(NV_TLMM_EAST, 0x6000);
+ 	if (!nv.gcc || !nv.se || !nv.gpio || !nv.gpio_east || !nv_clocks() || !nv_engine()) {
+ 		printf("PICASSO NVT: initialization stopped; GUI input is unchanged\n");
++		return;
++	}
++	if (nv.active) {
++		int result = nv_run_touch();
++		printf("PICASSO NVT: active driver stopped err=%d dead=%d; contacts released\n",
++		    result, nv.dead);
+ 		return;
+ 	}
+ 	uint8_t id[6] = {0}, info[4] = {0};
+@@ -398,15 +684,17 @@
+ bool
+ picasso_nvt_init(void)
+ {
+-	int enabled = 0;
++	int enabled = 0, active = 0;
+ 	(void)PE_parse_boot_argn("picassonvtprobe", &enabled, sizeof(enabled));
+-	if (enabled != 1) {
++	(void)PE_parse_boot_argn("picassonvt", &active, sizeof(active));
++	if (enabled != 1 && active != 1) {
+ 		return false;
+ 	}
+ 	if (nv.started) {
+ 		return true;
+ 	}
+ 	nv.started = true;
++	nv.active = active == 1;
+ 	thread_t thread;
+ 	kern_return_t kr = kernel_thread_start(nv_probe, NULL, &thread);
+ 	if (kr == KERN_SUCCESS) {
+--- /dev/null
++++ b/bsd/dev/picasso_nvt_protocol.h
+@@ -0,0 +1,52 @@
++/* Novatek nt36672c event layout, Linux sm7250 at 8e49d06a. */
++#ifndef PICASSO_NVT_PROTOCOL_H
++#define PICASSO_NVT_PROTOCOL_H
++#define NV_CONTACTS 10u
++#define NV_PACKET_BYTES 65u
++#define NV_PANEL_X 1080u
++#define NV_PANEL_Y 2400u
++struct nv_frame {
++	uint16_t mask;
++	uint16_t x[NV_CONTACTS], y[NV_CONTACTS];
++};
++enum { NV_FRAME_VALID, NV_FRAME_IGNORE, NV_FRAME_INVALID };
++static int
++nv_decode_packet(const uint8_t *packet, unsigned length, struct nv_frame *frame)
++{
++	if (!packet || !frame || length != NV_PACKET_BYTES) {
++		return NV_FRAME_INVALID;
++	}
++	/* Firmware recovery/watchdog patterns are not contact packets. */
++	/* FF contact slots are ordinary empty slots and must release fingers. */
++	if (packet[0] == 0x77 || packet[0] == 0xfd || packet[0] == 0xfe) {
++		bool same = true;
++		for (unsigned i = 1; i < 6; ++i) {
++			same = same && packet[i] == packet[0];
++		}
++		if (same) {
++			return NV_FRAME_IGNORE;
++		}
++	}
++	frame->mask = 0;
++	for (unsigned i = 0; i < NV_CONTACTS; ++i) {
++		const uint8_t *contact = packet + 6u * i;
++		unsigned id = contact[0] >> 3, status = contact[0] & 7u;
++		if (status != 1 && status != 2) {
++			continue;
++		}
++		if (id == 0 || id > NV_CONTACTS) {
++			return NV_FRAME_INVALID;
++		}
++		unsigned slot = id - 1u;
++		unsigned x = ((unsigned)contact[1] << 4) | (contact[3] >> 4);
++		unsigned y = ((unsigned)contact[2] << 4) | (contact[3] & 15u);
++		if (x >= NV_PANEL_X || y >= NV_PANEL_Y || (frame->mask & (1u << slot))) {
++			return NV_FRAME_INVALID;
++		}
++		frame->mask |= (uint16_t)(1u << slot);
++		frame->x[slot] = (uint16_t)x;
++		frame->y[slot] = (uint16_t)y;
++	}
++	return NV_FRAME_VALID;
++}
++#endif
