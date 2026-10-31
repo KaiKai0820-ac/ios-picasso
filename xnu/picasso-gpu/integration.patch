@@ -1,0 +1,277 @@
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -104,6 +104,7 @@
+ bsd/dev/random/randomdev.c		standard
+ 
+ bsd/dev/memdev.c			standard
++bsd/dev/picasso_gpu.c			standard
+ bsd/dev/sweet_ufs.c			standard
+ bsd/dev/sweet_sample.c			standard
+ bsd/dev/sweet_keys.c			standard
+--- a/iokit/conf/files.arm64
++++ b/iokit/conf/files.arm64
+@@ -21,3 +21,5 @@
+ iokit/Kernel/arm/hid/IOHIDEvent.cpp                              optional iokitcpp
+ iokit/Kernel/arm/hid/IOHIDEventServiceQueue.cpp                  optional iokitcpp
+ iokit/Kernel/arm/hid/IOHIDEventServiceUserClient.cpp             optional iokitcpp
++
++iokit/Kernel/arm/SweetGPU.cpp                                    optional iokitcpp
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -59,6 +59,7 @@
+ extern void sweet_keys_init(void);
+ extern void sweet_touch_init(void);
+ extern void sweet_usb_probe(void);
++extern void picasso_gpu_init(void);
+ 
+ #define REG_CAP         0x00
+ #define REG_IS          0x20
+@@ -1487,6 +1488,7 @@
+ 	sweet_keys_init();
+ 	sweet_touch_init();
+ 	sweet_usb_probe();
++	picasso_gpu_init();
+ 	/* Modem PAS boot (boot-arg modem=1): iokit/Kernel/arm/PicassoModem.cpp */
+ 	picasso_modem_init();
+ 	return 0;
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -45,6 +45,7 @@
+ 		CleanPoC_DcacheRegion_Force(addr, length);
+ 	}
+ }
++extern "C" bool sweet_gpu_surface_ready(uint32_t, void *, uint64_t);
+ extern "C" int sweet_console_muted;     /* osfmk/console/serial_console.c */
+ 
+ #if defined(SWEET)
+@@ -58,6 +59,7 @@
+ #include <IOKit/system.h>
+ #include <pexpert/pexpert.h>
+ #include <kern/clock.h>
++#include <kern/sched_prim.h>
+ #include <sys/proc.h>
+ 
+ enum {
+@@ -101,27 +103,6 @@
+ 
+ OSDefineMetaClassAndStructors(IOMobileFramebuffer, IOService);
+ 
+-/* Userspace asks IOServiceMatching("SweetGPU") and gives up when it is absent (the
+- * CoreAnimation bridge only loads with a GPU service present). Publish a stub so the
+- * bridge loads; Mesa finds no usable hardware behind it and draws in software. */
+-class SweetGPU : public IOService {
+-	OSDeclareDefaultStructors(SweetGPU);
+-public:
+-	bool start(IOService *provider) APPLE_KEXT_OVERRIDE
+-	{
+-		if (!IOService::start(provider)) {
+-			return false;
+-		}
+-		setProperty("stub", true);
+-		registerService();
+-		return true;
+-	}
+-};
+-
+-OSDefineMetaClassAndStructors(SweetGPU, IOService);
+-
+-
+-
+ class IOMobileFramebufferUserClient;
+ 
+ class AppleCLCD : public IOMobileFramebuffer {
+@@ -166,7 +147,15 @@
+ 	void addClient(IOMobileFramebufferUserClient *client);
+ 	void removeClient(IOMobileFramebufferUserClient *client);
+ 	void swap(const uint8_t *rec);
+-	void present(const uint8_t *rec);
++	bool present(const uint8_t *rec);
++	static void presentThread(void *, wait_result_t);
++	bool fPresenter;
++	bool fWorkReady;
++	uint8_t fWorkRec[SWEET_FB_SWAP_REC_SIZE];
++	uint64_t fSubmitted, fPresented, fDeferred, fSuperseded, fCopyNS;
++	uint64_t fWorkSequence, fNextVsync;
++	uint32_t fStats;
++	void queuePresent(const uint8_t *rec, uint64_t sequence);
+ };
+ 
+ /*
+@@ -255,18 +244,6 @@
+ 			thread_deallocate(t);
+ 		}
+ 	}
+-	{
+-		SweetGPU *gpu = new SweetGPU;
+-
+-		if (gpu != NULL) {
+-			if (gpu->init() && gpu->attach(this)) {
+-				gpu->start(this);
+-				IOLog("SWEET GPU: stub SweetGPU published (no hardware; Mesa will use softpipe)\n");
+-			} else {
+-				gpu->release();
+-			}
+-		}
+-	}
+ 	fLock = IOLockAlloc();
+ 	fClients = OSArray::withCapacity(4);
+ 	fSurface = sweet_surface_create_physical(fPhys, fWidth, fHeight, fRowBytes, SWEET_FB_FORMAT_BGRA);
+@@ -286,6 +263,20 @@
+ 	uint32_t hz = 10;
+ 	PE_parse_boot_argn("sweetfb_hz", &hz, sizeof(hz));
+ 	fFlushTicks = (hz == 0 || hz >= 60) ? 1 : 60 / hz;
++	fPresenter = false; fWorkReady = false;
++	fSubmitted = fPresented = fDeferred = fSuperseded = fCopyNS = fNextVsync = 0;
++	fWorkSequence = 0; fStats = 0;
++	uint32_t presenter = 0;
++	PE_parse_boot_argn("picassopresent", &presenter, sizeof(presenter));
++	PE_parse_boot_argn("picassofbstats", &fStats, sizeof(fStats));
++	if (presenter == 1) {
++		thread_t thread;
++		fPresenter = true;
++		if (kernel_thread_start(presentThread, this, &thread) == KERN_SUCCESS)
++			thread_deallocate(thread);
++		else fPresenter = false;
++	}
++	setProperty("SweetWaitsForGPU", true);
+ 	fVsync->setTimeoutUS(SWEET_FB_VSYNC_US);
+ 
+ 	setProperty(kIOUserClientClassKey, "IOMobileFramebufferUserClient");
+@@ -346,11 +337,21 @@
+ 				}
+ 			}
+ 		}
+-		sender->setTimeoutUS(SWEET_FB_VSYNC_US);
++		{
++		uint64_t period;
++		nanoseconds_to_absolutetime(SWEET_FB_VSYNC_US * 1000ULL, &period);
++		if (!fb->fNextVsync) fb->fNextVsync = now;
++		fb->fNextVsync += period;
++		uint64_t current = mach_absolute_time();
++		if (fb->fNextVsync <= current)
++			fb->fNextVsync += ((current - fb->fNextVsync) / period + 1) * period;
++		sender->wakeAtTime(fb->fNextVsync);
++	}
+ 		return;
+ 	}
+ 	bool flush = fb->fDirty && (count % fb->fFlushTicks) == 0;
+ 	uint8_t *rec = NULL;
++	uint64_t sequence = fb->fSubmitted;
+ 	if (flush) {
+ 		rec = (uint8_t *)IOMallocData(SWEET_FB_SWAP_REC_SIZE);
+ 		if (rec != NULL) {
+@@ -360,10 +361,72 @@
+ 	}
+ 	IOLockUnlock(fb->fLock);
+ 	if (rec != NULL) {
+-		fb->present(rec);
++		if (fb->fPresenter) fb->queuePresent(rec, sequence);
++		else {
++			uint64_t began = mach_absolute_time(), ns;
++			bool ok = fb->present(rec);
++			absolutetime_to_nanoseconds(mach_absolute_time() - began, &ns);
++			IOLockLock(fb->fLock);
++			if (ok) { ++fb->fPresented; fb->fCopyNS += ns; }
++			else { ++fb->fDeferred; if (fb->fSubmitted == sequence) fb->fDirty = true; }
++			IOLockUnlock(fb->fLock);
++		}
+ 		IOFreeData(rec, SWEET_FB_SWAP_REC_SIZE);
+ 	}
+-	sender->setTimeoutUS(SWEET_FB_VSYNC_US);
++	{
++		uint64_t period;
++		nanoseconds_to_absolutetime(SWEET_FB_VSYNC_US * 1000ULL, &period);
++		if (!fb->fNextVsync) fb->fNextVsync = now;
++		fb->fNextVsync += period;
++		uint64_t current = mach_absolute_time();
++		if (fb->fNextVsync <= current)
++			fb->fNextVsync += ((current - fb->fNextVsync) / period + 1) * period;
++		sender->wakeAtTime(fb->fNextVsync);
++	}
++}
++
++void
++AppleCLCD::queuePresent(const uint8_t *rec, uint64_t sequence)
++{
++	IOLockLock(fLock);
++	if (fWorkReady) ++fSuperseded;
++	memcpy(fWorkRec, rec, SWEET_FB_SWAP_REC_SIZE);
++	fWorkSequence = sequence;
++	fWorkReady = true;
++	thread_wakeup(&fWorkReady);
++	IOLockUnlock(fLock);
++}
++
++void
++AppleCLCD::presentThread(void *arg, wait_result_t)
++{
++	AppleCLCD *fb = (AppleCLCD *)arg;
++	uint8_t rec[SWEET_FB_SWAP_REC_SIZE];
++	for (;;) {
++		IOLockLock(fb->fLock);
++		while (!fb->fWorkReady) {
++			assert_wait(&fb->fWorkReady, THREAD_UNINT);
++			IOLockUnlock(fb->fLock);
++			thread_block(THREAD_CONTINUE_NULL);
++			IOLockLock(fb->fLock);
++		}
++		memcpy(rec, fb->fWorkRec, sizeof(rec));
++		uint64_t sequence = fb->fWorkSequence;
++		fb->fWorkReady = false;
++		bool off = fb->fPowerOff;
++		IOLockUnlock(fb->fLock);
++		uint64_t began = mach_absolute_time(), ns;
++		bool ok = !off && fb->present(rec);
++		absolutetime_to_nanoseconds(mach_absolute_time() - began, &ns);
++		IOLockLock(fb->fLock);
++		if (ok) { ++fb->fPresented; fb->fCopyNS += ns; }
++		else { ++fb->fDeferred; if (!off && fb->fSubmitted == sequence) fb->fDirty = true; }
++		if (fb->fStats && fb->fPresented && fb->fPresented % 120 == 0)
++			IOLog("PICASSO FB: submitted=%llu presented=%llu deferred=%llu superseded=%llu avg-copy-us=%llu\n",
++			    fb->fSubmitted, fb->fPresented, fb->fDeferred, fb->fSuperseded,
++			    fb->fCopyNS / fb->fPresented / 1000);
++		IOLockUnlock(fb->fLock);
++	}
+ }
+ 
+ void
+@@ -414,6 +477,8 @@
+ {
+ 	IOLockLock(fLock);
+ 	memcpy(fPending, rec, SWEET_FB_SWAP_REC_SIZE);
++	if (fDirty) ++fSuperseded;
++	++fSubmitted;
+ 	fDirty = true;
+ 	IOLockUnlock(fLock);
+ 	if ((++sweet_fb_swap_count % 1000) == 0) {
+@@ -421,10 +486,21 @@
+ 	}
+ }
+ 
+-void
++bool
+ AppleCLCD::present(const uint8_t *rec)
+ {
+ 	uint32_t mask = get32(rec, 0x104);
++	/* Check every surface before modifying any panel pixels. Keep an unfinished
++	 * frame pending instead of presenting part of it or silently dropping it. */
++	for (uint32_t layer = 0; layer < SWEET_FB_LAYERS; ++layer) {
++		if (!(mask & (1u << layer))) continue;
++		uint32_t id = get32(rec, 0x54 + 4 * layer);
++		SweetSurface *s = id ? sweet_surface_copy(id) : NULL;
++		bool ready = !s || s == fSurface || !s->memory ||
++		    sweet_gpu_surface_ready(id, (void *)s->kernelAddress(), s->memory->getLength());
++		OSSafeReleaseNULL(s);
++		if (!ready) return false;
++	}
+ 
+ 
+ 	if (!fConsolePaused) {
+@@ -514,6 +590,7 @@
+ 		}
+ 		s->release();
+ 	}
++	return true;
+ }
+ 
+ bool

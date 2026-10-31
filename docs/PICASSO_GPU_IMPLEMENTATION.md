@@ -1,8 +1,15 @@
 # K30 A620 implementation work packages
 
-Prepared 2026-10-31. This specifies future kernel work; only the offline inventory
-tool is implemented. No GPU kernel build, hardware access, reboot or flash was
-performed for this preparation. Research and pinned upstream links are in
+Updated 2026-10-31. The opt-in A620 backend, real GPU service, optional firmware
+packaging, presentation worker and GPU-userland build integration are now implemented
+in `xnu/picasso-gpu/`, `tools/` and `.github/workflows/gpu-userland.yml`.
+Four changed kernel translation units compile locally for ARM64. Actual-source
+allocator/ring/fence and firmware parser checks pass ASan/UBSan; default ADTs
+remain byte-identical with a fixed seed. Full linking and device execution remain
+to be verified. Hardware page flipping is deferred pending K30 DPU measurements.
+The detailed work packages below retain the design and acceptance criteria;
+see `xnu/picasso-gpu/SOURCE.md` for implemented arguments and limitations.
+Research and pinned upstream links are in
 [PICASSO_GPU_PLAN.md](PICASSO_GPU_PLAN.md).
 
 ## Decision and baseline
@@ -77,9 +84,9 @@ regions match stock index 9; all referenced clocks/IOMMUs resolve. A concatenate
 bundle without an explicit index and index 8's A619 tree are rejected with exit 2.
 The generated reports and device dumps remain outside git.
 
-## 1. First kernel patch: staged hardware probe
+## 1. Kernel patch: staged hardware bring-up
 
-Proposed changes in the generated XNU source:
+Implemented changes in the generated XNU source:
 
 | File | Work |
 | --- | --- |
@@ -88,7 +95,12 @@ Proposed changes in the generated XNU source:
 | `bsd/dev/sweet_ufs.c` | One-time startup hook after the log/storage path is available; create a dedicated probe thread |
 | `xnu/patches/` in this repository | Store the resulting ordered patch after local compile and clean apply checks |
 
-Proposed boot argument `picassogpu=N` defaults to 0. Its first levels are:
+Boot argument `picassogpu=N` defaults to 0. The source uses Apollo's finer
+22-stage ladder: level 1 reads GCC; level 2 enables the configuration bus;
+level 3 reads GPUCC; levels 4/5 establish CX and clocks; level 6 validates the
+GMU counter. Later levels gate SMMU, firmware, HFI, GX, CP and authenticated ZAP
+work. Runtime free-context and stream-overlap checks precede SMMU programming.
+The original grouping below describes the dependency order:
 
 1. Read only the relevant GCC clock/vote state; no GPUCC/GMU accesses.
 2. Establish the documented configuration-bus prerequisites, then read GPUCC

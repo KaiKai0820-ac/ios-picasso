@@ -19,6 +19,8 @@ on:
     branches: [main]
     paths:
       - "xnu/patches/**"
+      - "xnu/picasso-gpu/**"
+      - "tools/picasso-gpu-patch.py"
       - ".github/workflows/xnu.yml"
 
 concurrency:
@@ -50,6 +52,7 @@ jobs:
           cp xnu/patches/*.patch xnu/patches/*.sh dxb/patches/
           # Touch firmware is generated from pinned public sources, never stored in Git.
           python3 tools/picasso-nvt-firmware.py --patch-output dxb/patches/0214-picasso-novatek-firmware-data.patch
+          python3 tools/picasso-gpu-patch.py dxb/patches/0216-picasso-adreno620.patch
           # libfirehose_kernel is built arm64e-only; the SWEET kernel is plain arm64
           sed -i '' 's/ARCHS="x86_64 arm64e" VALID_ARCHS="x86_64 arm64e"/ARCHS="x86_64 arm64e arm64" VALID_ARCHS="x86_64 arm64e arm64"/' dxb/build.sh
           grep -c 'VALID_ARCHS="x86_64 arm64e arm64"' dxb/build.sh

@@ -108,7 +108,8 @@ def node(name, props=(), children=()):
     return n
 
 
-def build(seed=None, qemu=False, highmem=False, board='sweet', ram_base=None, ram_size=None):
+def build(seed=None, qemu=False, highmem=False, board='sweet', ram_base=None, ram_size=None,
+          gpu_probe=False, gpu_firmware=None):
     """qemu=True: same tree, but with QEMU virt's GIC addresses and CNTFRQ (tools/qemu-sweet.py)."""
     phys_base, mem_size = (HIGH_PHYS_BASE, HIGH_MEM_SIZE) if highmem else (PHYS_BASE, MEM_SIZE)
     gicd, gicr, timebase = (QEMU_GICD, QEMU_GICR, QEMU_TIMEBASE) if qemu else (GICD, GICR, TIMEBASE)
@@ -270,6 +271,20 @@ def build(seed=None, qemu=False, highmem=False, board='sweet', ram_base=None, ra
     product_props = d22ap_product()
     product = [node('product', [ph()] + product_props)] if product_props else []
 
+    gpu = []
+    if gpu_probe or gpu_firmware is not None:
+        if board != 'picasso' or qemu:
+            raise ValueError('GPU descriptor requires the physical picasso board')
+        if gpu_firmware is not None:
+            from picasso_gpu_firmware import validate
+            validate(gpu_firmware)
+        gpu = [node('sweet-gpu', [ph(), ('compatible', cstr('qcom,adreno-620')),
+                                  ('chip-id', u32(0x06020001)),
+                                  ('gmem-size', u32(0x80000)),
+                                  ('reg', u64(0x03d00000, 0x40000)),
+                                  ('zap-reservation', u64(0x8bc15400, 0x2000))]
+                    + list((gpu_firmware or {}).items()))]
+
     # Identity of the iPhone X whose userland runs here: compatible[0] is
     # hw.model/hw.target (D22AP), model is hw.machine/hw.product
     # (iPhone10,3). 'xiaomi,sweet' stays for SweetPlatformExpert matching.
@@ -282,7 +297,7 @@ def build(seed=None, qemu=False, highmem=False, board='sweet', ram_base=None, ra
         ('manufacturer', cstr('Apple Inc.')),
         ('#address-cells', u32(2)),
         ('#size-cells', u32(2)),
-    ], [chosen, defaults, cpus, arm_io, fbcon, buttons] + product + ([] if qemu else [ufs]))
+    ], [chosen, defaults, cpus, arm_io, fbcon, buttons] + product + ([] if qemu else [ufs]) + gpu)
 
 
 if __name__ == '__main__':
@@ -294,10 +309,23 @@ if __name__ == '__main__':
     parser.add_argument('--picasso', action='store_true')
     parser.add_argument('--ram-base', type=lambda s: int(s, 0), help='verified contiguous RAM base')
     parser.add_argument('--ram-size', type=lambda s: int(s, 0), help='verified contiguous RAM size')
+    parser.add_argument('--gpu-probe', action='store_true', help='embed A620 descriptor without firmware')
+    parser.add_argument('--gmu-fw')
+    parser.add_argument('--sqe-fw')
+    parser.add_argument('--zap-mdt')
+    parser.add_argument('--zap-seg')
     args = parser.parse_args()
+    firmware_paths = (args.gmu_fw, args.sqe_fw, args.zap_mdt, args.zap_seg)
+    gpu_firmware = None
+    if any(firmware_paths):
+        if not all(firmware_paths):
+            parser.error('GPU firmware requires all four --gmu-fw/--sqe-fw/--zap-mdt/--zap-seg')
+        from picasso_gpu_firmware import PROPERTIES
+        gpu_firmware = {key: open(path, 'rb').read() for key, path in zip(PROPERTIES, firmware_paths)}
     board = 'picasso' if args.picasso else 'sweet'
     root = build(qemu=args.qemu, highmem=args.highmem, board=board,
-                 ram_base=args.ram_base, ram_size=args.ram_size)
+                 ram_base=args.ram_base, ram_size=args.ram_size,
+                 gpu_probe=args.gpu_probe, gpu_firmware=gpu_firmware)
     blob = adt.serialize(root)
     open(args.out, 'wb').write(blob)
     if args.dump:
